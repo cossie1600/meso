@@ -146,28 +146,36 @@ void loop() {
   }
 
   // ACTIVE SAMPLING TRACK: Only parse data if the state machine is active
+  // ACTIVE SAMPLING TRACK: Only parse data if the state machine is active
   if (!isIdling) {
     if (bmv.readSensor()) {
       if (!bmv.isObstructed()) {
+        // Capture all three particulate dimensions
+        int intPM1  = (int)bmv.PM1();
         int intPM25 = (int)bmv.PM25();
-        
-        char txBuffer[8];
-        itoa(intPM25, txBuffer, 10); 
+        int intPM10 = (int)bmv.PM10();
 
-        pCharacteristic->setValue(txBuffer);
+        // Create a comma-separated packet string: "PM1,PM2.5,PM10"
+        String dataPacket = String(intPM1) + "," + String(intPM25) + "," + String(intPM10);
+
+        // Update BLE Characteristic and alert the connected app
+        pCharacteristic->setValue(dataPacket.c_str());
         pCharacteristic->notify();
 
-        logMessage("Internal Whole PM2.5: " + String(txBuffer));
-        
+        logMessage("Live Packet [PM1, PM2.5, PM10]: " + dataPacket);
       } else {
         logMessage("System Status Alert: Particle intake channel obstructed.");
       }
     } else {
       logMessage("I2C state idling... awaiting data slot update window.");
     }
+    
+    // This delay sets the polling cadence during active mode,
+    // and keeps the CPU free during idle mode to prioritize background BLE pings.
+    delay(readInterval); 
+  } else {
+    delay(10); 
   }
 
-  // This delay sets the polling cadence during active mode,
-  // and keeps the CPU free during idle mode to prioritize background BLE pings.
-  delay(readInterval); 
+
 }

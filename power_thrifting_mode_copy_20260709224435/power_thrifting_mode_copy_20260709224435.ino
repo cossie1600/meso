@@ -41,7 +41,7 @@ void setup() {
   bmv.close(); 
 
   // Initialize BLE Stack
-  BLEDevice::init("Qwiic Meso-Node");
+  BLEDevice::init("Meso Pin");
   BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
   BLEService *pService = pServer->createService(SERVICE_UUID);
