@@ -19,6 +19,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     @Published var pm1Value: String = "--"
     @Published var pm25Value: String = "--"
     @Published var pm10Value: String = "--"
+    @Published var history: [HistoricalReading] = []
     
     override init() {
         super.init()
@@ -83,6 +84,14 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
                     self.pm1Value = components[0]
                     self.pm25Value = components[1]
                     self.pm10Value = components[2]
+                    let newReading = HistoricalReading(
+                        timestamp: Date(),
+                        pm1: self.pm1Value,
+                        pm25: self.pm25Value,
+                        pm10: self.pm10Value
+                    )
+                    self.history.insert(newReading, at: 0)
+                    
                     self.statusText = "Data Received!"
                 } else {
                     // In case it catches a partial or bad packet

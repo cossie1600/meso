@@ -21,11 +21,11 @@ class SimulatorBridgeManager: AirQualityManagerProtocol {
     @Published var pm1Value: String = "--"
     @Published var pm25Value: String = "--"
     @Published var pm10Value: String = "--"
+    @Published var history: [HistoricalReading] = [] // 👈 1. Added property to fulfill protocol
     
     private var networkTimer: Timer?
     
     init() {
-        print("🚀 SimulatorBridgeManager Initialized. Starting loop...")
         startPollingPythonBridge()
     }
     
@@ -34,29 +34,27 @@ class SimulatorBridgeManager: AirQualityManagerProtocol {
             guard let self = self else { return }
             
             Task { @MainActor in
-                print("📡 Attempting to fetch from Python bridge...")
-                guard let url = URL(string: "http://127.0.0.1:8080/data") else {
-                    print("❌ Bad URL string Configuration")
-                    return
-                }
+                guard let url = URL(string: "http://127.0.0.1:8080/data") else { return }
                 
                 do {
-                    let (data, response) = try await URLSession.shared.data(from: url)
-                    print("✅ Data payload received! Size: \(data.count) bytes.")
-                    
-                    if let httpResponse = response as? HTTPURLResponse {
-                        print("ℹ️ HTTP Status Code: \(httpResponse.statusCode)")
-                    }
-                    
+                    let (data, _) = try await URLSession.shared.data(from: url)
                     let decodedData = try JSONDecoder().decode(SensorDataPackage.self, from: data)
-                    print("🎉 JSON Parsed Cleanly: Status message -> \(decodedData.status)")
                     
                     self.statusText = decodedData.status
                     self.pm1Value = decodedData.pm1
                     self.pm25Value = decodedData.pm25
                     self.pm10Value = decodedData.pm10
+                    
+                    // 👈 2. Log the incoming data packet into the history stream array
+                    let newReading = HistoricalReading(
+                        timestamp: Date(),
+                        pm1: decodedData.pm1,
+                        pm25: decodedData.pm25,
+                        pm10: decodedData.pm10
+                    )
+                    self.history.insert(newReading, at: 0)
+                    
                 } catch {
-                    print("❌ Bridge Network Exception Caught: \(error)")
                     self.statusText = "Bridge offline. Is scan.py running?"
                 }
             }
