@@ -12,6 +12,7 @@
 		964399C83001EDB900C15547 /* AirQualityManagerProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 964399C73001EDB900C15547 /* AirQualityManagerProtocol.swift */; };
 		964399CA3001EF1000C15547 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 964399C93001EF1000C15547 /* AppConfig.swift */; };
 		964399D43002092100C15547 /* DynamicAirQualityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 964399D33002092100C15547 /* DynamicAirQualityManager.swift */; };
+		964399F83003627C00C15547 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 964399F73003627C00C15547 /* AppLogger.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +22,7 @@
 		964399C73001EDB900C15547 /* AirQualityManagerProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirQualityManagerProtocol.swift; sourceTree = "<group>"; };
 		964399C93001EF1000C15547 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		964399D33002092100C15547 /* DynamicAirQualityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DynamicAirQualityManager.swift; sourceTree = "<group>"; };
+		964399F73003627C00C15547 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -45,6 +47,7 @@
 		964399AA3001907000C15547 = {
 			isa = PBXGroup;
 			children = (
+				964399F73003627C00C15547 /* AppLogger.swift */,
 				964399D33002092100C15547 /* DynamicAirQualityManager.swift */,
 				964399C93001EF1000C15547 /* AppConfig.swift */,
 				964399C73001EDB900C15547 /* AirQualityManagerProtocol.swift */,
@@ -137,6 +140,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				964399F83003627C00C15547 /* AppLogger.swift in Sources */,
 				964399C2300191D400C15547 /* BluetoothManager.swift in Sources */,
 				964399C83001EDB900C15547 /* AirQualityManagerProtocol.swift in Sources */,
 				964399CA3001EF1000C15547 /* AppConfig.swift in Sources */,

@@ -40,7 +40,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     // Step 4B: Found a Bluetooth device! Let's check if it's our ESP32
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi: NSNumber) {
         // Change "ESP32-BMV080" to match whatever name your ESP32 code broadcasts
-        if let name = peripheral.name, name == "Meso Pin" {
+        if let name = peripheral.name, name == AppConfig.bluetoothDeviceName {
             statusText = "Connecting..."
             centralManager.stopScan()
             
@@ -90,6 +90,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
                         pm25: self.pm25Value,
                         pm10: self.pm10Value
                     )
+                    AppLogger.writeLog("\(AppConfig.metricPMOne): \(self.pm1Value), \(AppConfig.metricPMTwoFive): \(self.pm25Value), \(AppConfig.metricPMTen): \(self.pm10Value)")
                     self.history.insert(newReading, at: 0)
                     
                     self.statusText = "Data Received!"

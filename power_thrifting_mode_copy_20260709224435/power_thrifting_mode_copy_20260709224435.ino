@@ -4,11 +4,15 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <Arduino.h>
+#include <SD.h>
+#include <SPI.h>
 
 SparkFunBMV080 bmv;
 
 #define SERVICE_UUID           "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a9"
+#define SD_CS_PIN 5
 
 BLECharacteristic *pCharacteristic;
 bool deviceConnected = false;
@@ -17,6 +21,7 @@ bool deviceConnected = false;
 const unsigned long ACTIVE_RUN_TIME  = 10000;  // Wake and read for 10 seconds (ms)
 const unsigned long IDLE_SLEEP_TIME  = 15000;  // Power down and wait 15 seconds (ms)
 const unsigned long SAMPLE_PACE      = 2000;   // Snapshot interval during active mode (2 seconds)
+
 
 class MyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) { 
@@ -28,15 +33,62 @@ class MyServerCallbacks : public BLEServerCallbacks {
   }
 };
 
+
+String formatTimestampForFilename(String originalStr) {
+    // originalStr = "2026-07-11 21:05:30"
+    
+    originalStr.replace("-", ""); // Changes dashes to underscores
+    originalStr.replace(" ", "_"); // Changes the space to an underscore
+    originalStr.replace(":", ""); // Changes colons to underscores
+    
+    return originalStr; // Returns "20260711_210530"
+}
+
+// Returns current time formatted as: "YYYY-MM-DD HH:MM:SS"
+String getCurrentDateTime() {
+  unsigned long allSeconds = millis() / 1000;
+  int runSeconds = allSeconds % 60;
+  int runMinutes = (allSeconds / 60) % 60;
+  int runHours = (allSeconds / 3600);
+
+  char buffer[16];
+  sprintf(buffer, "%02d:%02d:%02d", runHours, runMinutes, runSeconds);
+  return String(buffer);
+}
+
+String log_prefix = "";
+
+void logMessage(const String &message) {
+    const String log_message = getCurrentDateTime() + " " + message;
+    Serial.println(log_message);
+    
+    String file_path = "/" + log_prefix + ".txt";
+
+    File file = SD.open(file_path, FILE_APPEND);
+    if (file) {
+      file.println(log_message);
+      file.close();
+    } else {
+      Serial.println("Error opening: " + file_path);
+    }
+}
+
 void setup() {
   Serial.begin(115200);
   Wire.begin(); // Your Qwiic bus boots up immediately here
 
+  if (!SD.begin(SD_CS_PIN)) { 
+        Serial.println("🚨 SD Card hardware mount completely failed!");
+        return;
+  }
   if (bmv.begin() == false) {
-    Serial.println("CRITICAL: BMV080 missing on Qwiic bus.");
+    logMessage("CRITICAL: BMV080 missing on Qwiic bus.");
     while(1);
   }
-  
+  delay(500);
+
+  log_prefix = formatTimestampForFilename(getCurrentDateTime());
+
   // Explicitly close the laser initially to guarantee a clean start state
   bmv.close(); 
 
@@ -54,14 +106,14 @@ void setup() {
   pService->start();
   pServer->getAdvertising()->start();
 
-  Serial.println("Qwiic Continuous-Loop Firmware Initialized.");
+  logMessage("Qwiic Continuous-Loop Firmware Initialized.");
 }
 
 void loop() {
   // ==========================================
   // PHASE 1: WAKE UP & STABILIZE SENSOR
   // ==========================================
-  Serial.println("Waking up sensor engine...");
+  logMessage("Waking up sensor engine...");
   bmv.init(); 
   bmv.setMode(SF_BMV080_MODE_CONTINUOUS);
   
@@ -80,7 +132,7 @@ void loop() {
       pm25Sum += (int)bmv.PM25();
       pm10Sum += (int)bmv.PM10(); 
       totalSamplesTaken++;
-    }
+    } 
     // High-frequency polling step inside the active window
     delay(SAMPLE_PACE); 
   }
@@ -94,27 +146,27 @@ void loop() {
     int avgPM10 = pm10Sum / totalSamplesTaken;
 
     String dataPacket = String(avgPM1) + "," + String(avgPM25) + "," + String(avgPM10);
-    Serial.println("Aggregated Walking Packet: " + dataPacket);
+    logMessage("Aggregated Walking Packet: " + dataPacket);
 
     // Push straight to your iPhone app if connected
     if (deviceConnected) {
       pCharacteristic->setValue(dataPacket.c_str());
       pCharacteristic->notify();
-      Serial.println("Packet successfully dispatched over BLE.");
+      logMessage("Packet successfully dispatched over BLE.");
     } else {
-      Serial.println("No active app connection found. Skipping BLE transmission.");
+      logMessage("No active app connection found. Skipping BLE transmission.");
     }
   } else {
-    Serial.println("Warning: Active window timed out without capturing valid data.");
+    logMessage("Warning: Active window timed out without capturing valid data.");
   }
 
   // ==========================================
   // PHASE 3: HARDWARE POWER DOWN (THRIFT MODE)
   // ==========================================
-  Serial.println("Closing laser diode to preserve battery...");
+  logMessage("Closing laser diode to preserve battery...");
   bmv.close(); // Shut down the internal laser entirely 
 
-  Serial.println("Entering background idle step...");
+  logMessage("Entering background idle step...");
   Serial.flush();
 
   // Use FreeRTOS delay to yield CPU cycles cleanly during the idle state

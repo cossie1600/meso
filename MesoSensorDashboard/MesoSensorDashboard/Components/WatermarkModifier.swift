@@ -12,7 +12,7 @@ struct ClingGemWatermark: ViewModifier {
         content
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Text("ClingGem")
+                    Text(AppConfig.companyName)
                         .font(.system(size: 14, weight: .bold, design: .rounded))
                         .tracking(2.0)
                         .foregroundColor(.secondary)
