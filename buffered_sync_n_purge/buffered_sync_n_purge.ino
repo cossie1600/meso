@@ -7,10 +7,18 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <Wire.h> 
+#include <SparkFun_BMV080_Arduino_Library.h> 
+
+// ==========================================
+// PHYSICAL HARDWARE INSTANTIATION
+// ==========================================
+SparkFunBMV080 bmv; 
+#define BMV080_ADDR 0x57 // Default SparkFun BMV080 I2C Address
 
 // File storage configurations
 #define FILE_PATH "/pm_data.jsonl"
-const unsigned long WRITE_INTERVAL = 15 * 60 * 1000; // 15 minutes in milliseconds
+const unsigned long WRITE_INTERVAL = 45 * 60 * 1000; //45 minutes (45 mins * 60 secs * 1000 ms)
 unsigned long lastWriteTime = 0;
 
 // Struct to represent a PM sample
@@ -24,12 +32,16 @@ struct pm_sample {
 // Thread-safe Memory Buffer
 std::vector<pm_sample> memoryBuffer;
 
-
 // BLE Configuration
 BLEServer* pServer = nullptr;
 BLECharacteristic* pDataCharacteristic = nullptr;
 bool deviceConnected = false;
 bool triggerSync = false; // Flag to tell FreeRTOS task to start background transmission
+
+// Time parameters mapped out for your outdoor walking sessions
+const unsigned long ACTIVE_RUN_TIME  = 10000;  // Wake and read for 10 seconds (ms)
+const unsigned long IDLE_SLEEP_TIME  = 60000;  // Power down and wait 1 minute (ms)
+const unsigned long SAMPLE_PACE      = 2000;   // Snapshot interval during active mode (2 seconds)
 
 // Setup UUIDs
 #define SERVICE_UUID        "4fa8c11a-9a37-4d1a-994c-850d9841cae5"
@@ -74,7 +86,6 @@ void writeBufferToSPIFFS() {
   
   File file = SPIFFS.open(FILE_PATH, FILE_APPEND);
   if (!file) {
-    Serial.println("Failed to open file for appending");
     portEXIT_CRITICAL(&myMutex);
     return;
   }
@@ -88,8 +99,6 @@ void writeBufferToSPIFFS() {
   file.close();
   memoryBuffer.clear(); // Empty the RAM buffer
   portEXIT_CRITICAL(&myMutex);
-  
-  Serial.println("Memory buffer flushed to SPIFFS successfully.");
 }
 
 // Background task to transmit data without blocking loop()
@@ -97,7 +106,6 @@ void bleSenderTask(void* parameter) {
   while (true) {
     if (triggerSync && deviceConnected) {
       triggerSync = false; // Reset trigger flag
-      Serial.println("Starting non-blocking BLE data sync...");
 
       // 1. Send all data residing in SPIFFS first
       if (SPIFFS.exists(FILE_PATH)) {
@@ -109,28 +117,38 @@ void bleSenderTask(void* parameter) {
             if (line.length() > 0) {
               pDataCharacteristic->setValue(line.c_str());
               pDataCharacteristic->notify(); // Send to connected phone
-              vTaskDelay(pdMS_TO_TICKS(15)); // Short delay to prevent congestion
+              vTaskDelay(pdMS_TO_TICKS(15)); // Safe: we are outside critical section
             }
           }
           file.close();
-          SPIFFS.remove(FILE_PATH); // Wipe SPIFFS data once successfully sent
+          
+          // Only delete file if we successfully completed the stream without disconnecting
+          if (deviceConnected) {
+            SPIFFS.remove(FILE_PATH); 
+          }
         }
       }
 
-      // 2. Send current data remaining in RAM
+      // 2. Send current data remaining in RAM (Safely avoiding lockup)
+      std::vector<pm_sample> tempBuffer;
+
       portENTER_CRITICAL(&myMutex);
-      if (!memoryBuffer.empty() && deviceConnected) {
-        for (const auto& sample : memoryBuffer) {
+      if (!memoryBuffer.empty()) {
+        tempBuffer = memoryBuffer; // Quickly clone vector
+        memoryBuffer.clear();      // Clear volatile storage immediately
+      }
+      portEXIT_CRITICAL(&myMutex); // Free lock immediately
+
+      // Now we can safely iterate and send data with task delays!
+      if (!tempBuffer.empty() && deviceConnected) {
+        for (const auto& sample : tempBuffer) {
+          if (!deviceConnected) break; // Quit if phone disconnects mid-stream
           String line = serializeSample(sample);
           pDataCharacteristic->setValue(line.c_str());
           pDataCharacteristic->notify();
-          vTaskDelay(pdMS_TO_TICKS(15));
+          vTaskDelay(pdMS_TO_TICKS(15)); // Perfectly safe here
         }
-        memoryBuffer.clear(); // Wipe active RAM once sent
       }
-      portENTER_CRITICAL(&myMutex);
-
-      Serial.println("BLE data sync completed. Memory & Storage Cleared.");
     }
     vTaskDelay(pdMS_TO_TICKS(100)); // Yield to rest of system
   }
@@ -138,6 +156,13 @@ void bleSenderTask(void* parameter) {
 
 void setup() {
   Serial.begin(115200);
+
+  // Initialize Wire (I2C) and the BMV080 sensor
+  Wire.begin();
+  if (bmv.begin(BMV080_ADDR, Wire) == false) {
+    Serial.println("BMV080 sensor not detected! Freezing setup execution...");
+    while (1); // Halt if hardware is missing/unwired
+  }
 
   // Initialize SPIFFS
   if (!SPIFFS.begin(true)) {
@@ -165,52 +190,95 @@ void setup() {
   pAdvertising->setScanResponse(true);
   pServer->startAdvertising();
 
-  // Create FreeRTOS Background Task to handle BLE transmissions
-  // Task is assigned to Core 0 to leave loop() running unobstructed on Core 1
+  // Create FreeRTOS Background Task to handle BLE transmissions on Core 0
   xTaskCreatePinnedToCore(
-    bleSenderTask,    // Function name
-    "BLESenderTask",  // Task name
-    8192,             // Stack size (bytes)
-    NULL,             // Task inputs
-    1,                // Low priority to not block system operations
-    NULL,             // Task handle
-    0                 // Core 0
+    bleSenderTask,    
+    "BLESenderTask",  
+    8192,             
+    NULL,             
+    1,                
+    NULL,             
+    0                 
   );
 
   lastWriteTime = millis();
 }
 
-// Simulated function to show where mean values are acquired
-void addNewPMSample(float mean_pm1, float mean_pm2_5, float mean_pm10) {
-  pm_sample newSample;
-  newSample.timestamp_ms = millis();
-  newSample.pm1 = mean_pm1;
-  newSample.pm2_5 = mean_pm2_5;
-  newSample.pm10 = mean_pm10;
+// ==========================================
+// SENSOR PIPELINE HELPER METHODS
+// ==========================================
 
-  portENTER_CRITICAL(&myMutex);
-  memoryBuffer.push_back(newSample);
-  portEXIT_CRITICAL(&myMutex);
+// PHASE 1: Wake up the physical hardware and allow registers to stabilize
+void wakeAndStabilizeSensor() {
+  bmv.init(); 
+  bmv.setMode(SF_BMV080_MODE_CONTINUOUS);
+  delay(1000); 
 }
 
-void loop() {
-  // Your sensor read loop remains completely uninterrupted!
-  // Example mock mean generation logic:
-  static unsigned long lastReading = 0;
-  if (millis() - lastReading > 5000) { // Take reading every 5 seconds
-    lastReading = millis();
-    
-    float mock_pm1 = random(5, 15);
-    float mock_pm2_5 = random(12, 35);
-    float mock_pm10 = random(20, 50);
+// PHASE 2: High-frequency polling loop to collect raw data points
+void gatherSensorData(float &pm1Sum, float &pm25Sum, float &pm10Sum, int &totalSamples) {
+  unsigned long startSampleTime = millis();
 
-    addNewPMSample(mock_pm1, mock_pm2_5, mock_pm10);
-    Serial.println("Sensor mean calculated and sample added to buffer.");
+  while (millis() - startSampleTime < ACTIVE_RUN_TIME) {
+    if (bmv.readSensor() && !bmv.isObstructed()) {
+      pm1Sum  += bmv.PM1(); 
+      pm25Sum += bmv.PM25();
+      pm10Sum += bmv.PM10(); 
+      totalSamples++;
+    } 
+    delay(SAMPLE_PACE); 
   }
+}
 
-  // 15-minute write interval checker
+// PHASE 3: Compute mathematical mean and save structure to volatile memory
+void calculateAndBufferMean(float pm1Sum, float pm25Sum, float pm10Sum, int totalSamples) {
+  if (totalSamples > 0) {
+    float avgPM1  = pm1Sum / totalSamples;
+    float avgPM25 = pm25Sum / totalSamples;
+    float avgPM10 = pm10Sum / totalSamples;
+
+    pm_sample newSample;
+    newSample.timestamp_ms = millis();
+    newSample.pm1 = avgPM1;
+    newSample.pm2_5 = avgPM25;
+    newSample.pm10 = avgPM10;
+
+    portENTER_CRITICAL(&myMutex);
+    memoryBuffer.push_back(newSample);
+    portEXIT_CRITICAL(&myMutex);
+  }
+}
+
+// PHASE 4: Put hardware to sleep to preserve laser life & battery
+void powerDownSensor() {
+  bmv.close(); 
+  Serial.flush();
+}
+
+// PHASE 5: Handle the periodic SPIFFS write
+void handlePeriodicStorageWrite() {
   if (millis() - lastWriteTime >= WRITE_INTERVAL) {
     lastWriteTime = millis();
-    writeBufferToSPIFFS();
+    writeBufferToSPIFFS(); 
   }
+}
+
+// =========================================================================
+// MAIN RUN LOOP (Core 1 execution)
+// =========================================================================
+
+void loop() {
+  wakeAndStabilizeSensor();
+
+  float pm1Sum = 0, pm25Sum = 0, pm10Sum = 0;
+  int totalSamples = 0;
+  gatherSensorData(pm1Sum, pm25Sum, pm10Sum, totalSamples);
+
+  calculateAndBufferMean(pm1Sum, pm25Sum, pm10Sum, totalSamples);
+
+  powerDownSensor();
+
+  handlePeriodicStorageWrite();
+
+  vTaskDelay(pdMS_TO_TICKS(IDLE_SLEEP_TIME)); 
 }
