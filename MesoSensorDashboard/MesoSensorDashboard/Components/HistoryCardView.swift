@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct HistoryCardView: View {
-    let reading: HistoricalReading
+    let reading: DB_PMSample
     
     private var timeFormatter: DateFormatter {
         let formatter = DateFormatter()
@@ -31,9 +31,9 @@ struct HistoryCardView: View {
             
             //  Bottom Row: The Three Badges auto-scaled and distributed evenly
             HStack(spacing: 8) {
-                MetricBadge(label: AppConfig.metricPMOne, value: reading.pm1)
-                MetricBadge(label: AppConfig.metricPMTwoFive, value: reading.pm25)
-                MetricBadge(label: AppConfig.metricPMTen, value: reading.pm10)
+                MetricBadge(label: AppConfig.metricPMOne, value: String(format: "%.1f", reading.pm1))
+                MetricBadge(label: AppConfig.metricPMTwoFive, value: String(format: "%.1f", reading.pm25))
+                MetricBadge(label: AppConfig.metricPMTen, value: String(format: "%.1f", reading.pm10))
             }
             .frame(maxWidth: .infinity) // Ensures they expand to fill the container width
         }

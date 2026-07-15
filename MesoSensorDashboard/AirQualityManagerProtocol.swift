@@ -23,5 +23,4 @@ protocol AirQualityManagerProtocol: ObservableObject {
     var pm1Value: String { get set }
     var pm25Value: String { get set }
     var pm10Value: String { get set }
-    var history: [HistoricalReading] { get set }
 }

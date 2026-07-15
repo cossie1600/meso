@@ -8,30 +8,102 @@
 import Foundation
 import CoreBluetooth
 import Combine
+import SwiftData
+
+enum ConnectionStrategy {
+    case batterySaver // 15-minute intervals
+    case emergency    // 1-minute tracking interval
+}
+
+enum AlertVisualTheme {
+    case none
+    case fineParticulates  // Smog/Smoke (Blue)
+    case allergenProfile   // Pollen/Dust signature (Teal)
+    case generalCoarse     // Generic heavy dust (Teal/Slate)
+}
 
 class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDelegate, CBPeripheralDelegate {
     
-    private var centralManager: CBCentralManager!
-    private var esp32Peripheral: CBPeripheral?
+    @Published var currentStrategy: ConnectionStrategy
+    @Published var connectedPeripheral: CBPeripheral?
+    @Published var alertMessage: String? = nil
+    @Published var alertTheme: AlertVisualTheme = .none
+    var mockDataTimer: Timer?
+    var modelContainer: ModelContainer?
+    var esp32Peripheral: CBPeripheral?
+    var centralManager: CBCentralManager?
     
     // This tells SwiftUI to update the screen whenever these change
     @Published var statusText: String = "Initializing..."
     @Published var pm1Value: String = "--"
     @Published var pm25Value: String = "--"
     @Published var pm10Value: String = "--"
-    @Published var history: [HistoricalReading] = []
     
-    override init() {
+    // MARK: - 2. The Initializer (PUT IT RIGHT HERE)
+    init(modelContainer: ModelContainer? = nil) {
+        if let container = modelContainer {
+            self.modelContainer = container
+        } else {
+            do {
+                // Fallback: Safe, temporary in-memory container for Previews/Simulators
+                let config = ModelConfiguration(isStoredInMemoryOnly: true)
+                self.modelContainer = try ModelContainer(for: DB_PMSample.self, configurations: config)
+                AppLogger.writeLog("🧠 In-Memory Test Database Container Initialized.")
+            } catch {
+                self.modelContainer = nil
+                AppLogger.writeLog("❌ Failed to create temporary database container: \(error)")
+            }
+        }
+        
+        // 1. Decouple initial state selection
+        if AppConfig.forceInitialEmergencyState {
+            self.currentStrategy = .emergency
+            self.alertMessage = "DEBUG: Forced Emergency Active"
+        } else {
+            self.currentStrategy = .batterySaver
+        }
+        
         super.init()
-        // Starts the iPhone's Bluetooth central system
-        centralManager = CBCentralManager(delegate: self, queue: nil)
+        
+        // 2. Decouple execution pipeline
+        if AppConfig.useMockSimulatorBridge {
+            AppLogger.writeLog("🤖 Mock Simulator Bridge Active. Bypassing BLE Hardware.")
+            self.statusText = "Connected (Mock Simulator)"
+            startMockDataStream()
+        } else {
+            AppLogger.writeLog("📡 Real BLE Hardware Mode Active. Starting Central Manager.")
+#if !targetEnvironment(simulator)
+            centralManager = CBCentralManager(delegate: self, queue: nil)
+#else
+            self.statusText = "Error: Cannot run BLE hardware on iOS Simulator."
+#endif
+        }
+    }
+    
+    func sendSleepIntervalToPeripheral(_ peripheral: CBPeripheral?, factor: ConnectionStrategy) {
+        self.currentStrategy = factor
+        
+        if AppConfig.useMockSimulatorBridge {
+            AppLogger.writeLog("🤖 Simulator adapting behavior to strategy: \(factor)")
+            // Restart the timer with the updated speed (1-minute vs 15-minute emulation pace)
+            startMockDataStream()
+        } else {
+            // Real hardware path
+            guard let actualPeripheral = peripheral else { return }
+            let sleepMinutes = (factor == .batterySaver) ? 15 : 1
+            let payloadString = "SLEEP:\(sleepMinutes)"
+            if let data = payloadString.data(using: .utf8) {
+                //actualPeripheral.writeValue(data, for: writeCharacteristic, type: .withResponse)
+                AppLogger.writeLog("📡 Sent operational directive to ESP32: Sleep for \(sleepMinutes) min")
+            }
+        }
     }
     
     // Step 4A: Check if iPhone Bluetooth is turned on
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
             statusText = "Scanning for ESP32..."
-            centralManager.scanForPeripherals(withServices: nil, options: nil)
+            centralManager?.scanForPeripherals(withServices: nil, options: nil)
         } else {
             statusText = "Please enable Bluetooth"
         }
@@ -42,17 +114,18 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         // Change "ESP32-BMV080" to match whatever name your ESP32 code broadcasts
         if let name = peripheral.name, name == AppConfig.bluetoothDeviceName {
             statusText = "Connecting..."
-            centralManager.stopScan()
+            centralManager?.stopScan()
             
             self.esp32Peripheral = peripheral
             self.esp32Peripheral?.delegate = self
-            centralManager.connect(peripheral, options: nil)
+            centralManager?.connect(peripheral, options: nil)
         }
     }
     
     // Step 4C: Connected! Now find the data channels (Services)
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         statusText = "Connected!"
+        self.connectedPeripheral = peripheral
         peripheral.discoverServices(nil)
     }
     
@@ -72,33 +145,39 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
     }
     
-    // Step 4E: Catch the packet and split it by commas
+    // Step 4E: Catch the JSON packet, parse it, and commit it to SQLite
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        if let data = characteristic.value, let dataString = String(data: data, encoding: .utf8) {
-            
-            // Split "12,15,30" into an array ["12", "15", "30"]
-            let components = dataString.components(separatedBy: ",")
-            
-            DispatchQueue.main.async {
-                if components.count == 3 {
-                    self.pm1Value = components[0]
-                    self.pm25Value = components[1]
-                    self.pm10Value = components[2]
-                    let newReading = HistoricalReading(
-                        timestamp: Date(),
-                        pm1: self.pm1Value,
-                        pm25: self.pm25Value,
-                        pm10: self.pm10Value
-                    )
-                    AppLogger.writeLog("\(AppConfig.metricPMOne): \(self.pm1Value), \(AppConfig.metricPMTwoFive): \(self.pm25Value), \(AppConfig.metricPMTen): \(self.pm10Value)")
-                    self.history.insert(newReading, at: 0)
-                    
-                    self.statusText = "Data Received!"
-                } else {
-                    // In case it catches a partial or bad packet
-                    self.statusText = "Connected (Bad Packet)"
-                }
-            }
+        if let error = error {
+            AppLogger.writeLog("Bluetooth notification error: \(error.localizedDescription)")
+            return
         }
+        
+        guard let data = characteristic.value,
+              let dataString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        
+        // Create an optional packet reference to hold whichever format resolves
+        let packet: IncomingPacket?
+        
+        // 1. Check the prefix to detect JSON vs. Comma-Separated Values (CSV)
+        if dataString.hasPrefix("{") {
+            packet = IncomingPacket.decodeJSON(from: dataString)
+        } else {
+            packet = IncomingPacket.decodeCommaSeparatedString(from: dataString)
+        }
+        
+        // 2. Fallback if both parsing frameworks fail
+        guard let validPacket = packet else {
+            updateStatusOnMainThread(to: "Connected (Bad Packet)")
+            return
+        }
+        
+        // 3. Commit the clean records to SQLite
+        saveToSQLite(validPacket)
+        
+        // 4. Update the live UI strings
+        updateLiveState(with: validPacket)
+        evaluateAirQualityThresholds(for: validPacket)
+        
     }
+    
 }
