@@ -14,6 +14,7 @@ struct MesoSensorDashboardApp: App {
     
     // 1. Declare the StateObject without giving it an immediate value yet
     @StateObject private var bleManager: BluetoothManager
+    @Environment(\.scenePhase) private var scenePhase
     
     init() {
         do {
@@ -47,9 +48,23 @@ struct MesoSensorDashboardApp: App {
                 .environmentObject(bleManager)
                 .modelContainer(container)
                 .onAppear {
-                    // Run the database pruning routine on launch!
+                    // Run the database pruning routine exactly once on launch!
                     let context = ModelContext(container)
                     deleteOldReadings(context: context)
+                }
+                .onChange(of: scenePhase) { oldPhase, newPhase in
+                    switch newPhase {
+                    case .active:
+                        UIApplication.shared.isIdleTimerDisabled = true
+                        AppLogger.writeLog("App transitioned from \(oldPhase) to \(newPhase). Screen auto-lock disabled.")
+                        
+                    case .inactive, .background:
+                        UIApplication.shared.isIdleTimerDisabled = false
+                        AppLogger.writeLog("App transitioned to \(newPhase). Screen auto-lock behavior restored.")
+                        
+                    @unknown default:
+                        break
+                    }
                 }
         }
     }

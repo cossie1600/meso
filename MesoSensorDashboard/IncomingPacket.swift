@@ -59,18 +59,4 @@ struct IncomingPacket: Decodable {
         return IncomingPacket(t: 0, pm1: pm1, pm25: pm25, pm10: pm10)
     }
     
-    var isCoarseDustOrAllergenProfileActive: Bool {
-        // Prevent division by zero if the sensor reads absolute zero for PM10
-        guard pm10 > 0 else { return false }
-        
-        // 1. Calculate if coarse particles make up 70% or more of the PM10 mass
-        let coarseRatio = (pm10 - pm25) / pm10
-        let matchesCoarseRatio = coarseRatio >= AppConfig.coarseParticleAlertThreshold
-        
-        // 2. Check if ultra-fine particles are safely low
-        let matchesFineLimit = pm1 < AppConfig.ultraFineParticleAlertThreshold
-        
-        // Both conditions must pass to match the profile signature
-        return matchesCoarseRatio && matchesFineLimit
-    }
 }

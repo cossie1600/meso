@@ -14,14 +14,11 @@ extension BluetoothManager {
     func evaluateAirQualityThresholds(for packet: IncomingPacket) {
         AppLogger.writeLog("🔬 [Threshold Debug] Evaluating: PM1: \(packet.pm1), PM2.5: \(packet.pm25), PM10: \(packet.pm10)")
         
-        let pm25Threshold = AppConfig.pm25AlertThreshold
-        let pm10Threshold = AppConfig.pm10AlertThreshold
-        
         // 1. Evaluate your specific conditions
         let isFineParticulateSpike = packet.pm25 > AppConfig.pm25AlertThreshold // evaluates if PM2.5 > 35.0
         
         let isCoarseDustSpike = packet.pm10 > AppConfig.pm10AlertThreshold     // evaluates if PM10 > 75.0
-        let isDustAllergenRatioSpike = packet.isCoarseDustOrAllergenProfileActive
+        let isDustAllergenRatioSpike = isCoarseDustOrAllergenProfileActive(for: packet)
         
         let shouldBeInEmergency = isFineParticulateSpike || isCoarseDustSpike || isDustAllergenRatioSpike
         let targetStrategy: ConnectionStrategy = shouldBeInEmergency ? .emergency : .batterySaver
@@ -59,8 +56,27 @@ extension BluetoothManager {
                 self.currentStrategy = targetStrategy
             }
             
-            let activePeripheral = self.connectedPeripheral ?? self.esp32Peripheral
+            let activePeripheral = self.connectedPeripheral ?? self.firmwarePeripheral
             self.sendSleepIntervalToPeripheral(activePeripheral, factor: targetStrategy)
         }
+    }
+}
+
+extension BluetoothManager {
+    
+    /// Evaluates if the current data packet matches a coarse dust or pollen signature profile
+    func isCoarseDustOrAllergenProfileActive(for packet: IncomingPacket) -> Bool {
+        // 1. Prevent division by zero and filter out near-zero ambient noise
+        guard packet.pm10 >= 15.0 else { return false }
+        
+        // 2. Calculate if coarse particles make up 70% or more of the PM10 mass
+        let coarseRatio = (packet.pm10 - packet.pm25) / packet.pm10
+        let matchesCoarseRatio = coarseRatio >= AppConfig.coarseParticleAlertThreshold
+        
+        // 3. Check if ultra-fine particles are safely low
+        let matchesFineLimit = packet.pm1 < AppConfig.ultraFineParticleAlertThreshold
+        
+        // Both conditions must pass to match the signature profile rules
+        return matchesCoarseRatio && matchesFineLimit
     }
 }

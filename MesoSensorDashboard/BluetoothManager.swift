@@ -30,7 +30,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     @Published var alertTheme: AlertVisualTheme = .none
     var mockDataTimer: Timer?
     var modelContainer: ModelContainer?
-    var esp32Peripheral: CBPeripheral?
+    var firmwarePeripheral: CBPeripheral?
     var centralManager: CBCentralManager?
     
     // This tells SwiftUI to update the screen whenever these change
@@ -67,15 +67,18 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         
         // 2. Decouple execution pipeline
         if AppConfig.useMockSimulatorBridge {
-            AppLogger.writeLog("🤖 Mock Simulator Bridge Active. Bypassing BLE Hardware.")
+            AppLogger.writeLog("Mock Simulator Bridge Active. Bypassing BLE Hardware.")
             self.statusText = "Connected (Mock Simulator)"
             startMockDataStream()
         } else {
-            AppLogger.writeLog("📡 Real BLE Hardware Mode Active. Starting Central Manager.")
+            AppLogger.writeLog("Real BLE Hardware Mode Active. Instantiating Central Manager.")
+            
 #if !targetEnvironment(simulator)
+            // 1. Only initialize the hardware manager here. Do not call any scanning methods yet!
             centralManager = CBCentralManager(delegate: self, queue: nil)
 #else
-            self.statusText = "Error: Cannot run BLE hardware on iOS Simulator."
+            AppLogger.writeLog("Execution stopped: Cannot run BLE hardware on an iOS Simulator window.")
+            self.statusText = "Error: Use Simulator Bridge on Mac."
 #endif
         }
     }
@@ -101,32 +104,78 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     
     // Step 4A: Check if iPhone Bluetooth is turned on
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        if central.state == .poweredOn {
-            statusText = "Scanning for ESP32..."
-            centralManager?.scanForPeripherals(withServices: nil, options: nil)
-        } else {
-            statusText = "Please enable Bluetooth"
+        switch central.state {
+        case .poweredOn:
+            AppLogger.writeLog("Bluetooth hardware status: Powered On. Beginning scan sequence...")
+            self.statusText = "Scanning for ESP32..."
+            
+            let targetServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
+            
+            self.centralManager?.scanForPeripherals(withServices: nil, options: nil)
+            
+        case .poweredOff:
+            AppLogger.writeLog("Bluetooth hardware status: Powered Off.")
+            self.statusText = "Bluetooth is turned off"
+            
+        case .unauthorized:
+            AppLogger.writeLog("Bluetooth hardware status: Unauthorized. Check Info.plist keys.")
+            self.statusText = "Permissions denied"
+            
+        default:
+            AppLogger.writeLog("Bluetooth hardware status: Transitioning state \(central.state.rawValue)")
         }
     }
     
     // Step 4B: Found a Bluetooth device! Let's check if it's our ESP32
-    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi: NSNumber) {
-        // Change "ESP32-BMV080" to match whatever name your ESP32 code broadcasts
-        if let name = peripheral.name, name == AppConfig.bluetoothDeviceName {
-            statusText = "Connecting..."
-            centralManager?.stopScan()
+    func centralManager(_ central: CBCentralManager,
+                        didDiscover peripheral: CBPeripheral,
+                        advertisementData: [String : Any],
+                        rssi RSSI: NSNumber) {
+        AppLogger.writeLog("Found device: \(peripheral.name ?? "Unknown")")
+        
+        let deviceName = peripheral.name ?? "Unnamed Local Device"
+        AppLogger.writeLog("Found radio signature: \(deviceName) [RSSI: \(RSSI)]")
+        
+        // 1. Strict prefix matching to target your dynamic "Meso Pin-XXXX" devices
+        if deviceName.hasPrefix("Meso Pin") {
+            AppLogger.writeLog("Target match confirmed! Halting scan and attempting link...")
             
-            self.esp32Peripheral = peripheral
-            self.esp32Peripheral?.delegate = self
-            centralManager?.connect(peripheral, options: nil)
+            // 2. Halt scanning immediately to clear the hardware state
+            self.centralManager?.stopScan()
+            
+            // 3. Keep a strong pointer reference to the raw discovered peripheral
+            self.connectedPeripheral = peripheral
+            
+            // 4. Update UI status
+            self.statusText = "Connecting to \(deviceName)..."
+            
+            // 5. Initiate the handshake (We set the delegate ONLY inside the didConnect callback)
+            self.centralManager?.connect(peripheral, options: nil)
         }
     }
     
     // Step 4C: Connected! Now find the data channels (Services)
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        statusText = "Connected!"
-        self.connectedPeripheral = peripheral
-        peripheral.discoverServices(nil)
+        AppLogger.writeLog("Swift BLE: Successfully connected to: \(peripheral.name ?? "Unknown")")
+        
+        // Assign the delegate here, at the exact moment of connection
+        peripheral.delegate = self
+        
+        // Discover the customized service
+        peripheral.discoverServices([CBUUID(string: AppConfig.firmwareServiceUUIDString)])
+    }
+    
+    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        let errorDescription = error?.localizedDescription ?? "Unknown error"
+        AppLogger.writeLog("Swift BLE ERROR: Failed to establish link to \(peripheral.name ?? "Device"): \(errorDescription)")
+        
+        // Reset our local tracking variable
+        self.connectedPeripheral = nil
+        self.statusText = "Connection failed. Retrying scan..."
+        
+        // Restart scanning so the app can try to connect again
+        let targetServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
+        self.centralManager?.scanForPeripherals(withServices: [targetServiceUUID], options: nil)
     }
     
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
@@ -139,9 +188,19 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     // Step 4D: Find the specific text stream (Characteristic) and listen to it
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard let characteristics = service.characteristics else { return }
+        
         for characteristic in characteristics {
-            // Subscribe to notifications so the ESP32 pushes live dust data automatically
-            peripheral.setNotifyValue(true, for: characteristic)
+            // Dynamically inspect the characteristic's properties.
+            // We only subscribe if the device says it actively supports notify or indicate.
+            let canNotify = characteristic.properties.contains(.notify)
+            let canIndicate = characteristic.properties.contains(.indicate)
+            
+            if canNotify || canIndicate {
+                print("Found dynamic data stream: \(characteristic.uuid.uuidString). Subscribing...")
+                peripheral.setNotifyValue(true, for: characteristic)
+            } else {
+                print("Skipping static system characteristic: \(characteristic.uuid.uuidString)")
+            }
         }
     }
     

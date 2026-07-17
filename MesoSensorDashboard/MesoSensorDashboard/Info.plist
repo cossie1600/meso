@@ -4,5 +4,9 @@
 <dict>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>This application requires a permanent Bluetooth connection to collect real-time data metrics from your ESP32 air sensor device.</string>
+    <key>CFBundleIdentifier</key>
+        <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 </dict>
 </plist>

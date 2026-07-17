@@ -54,7 +54,7 @@ struct ContentView: View {
             
             Spacer()
             
-            BatteryNote()
+            //BatteryNote()
             FacetedStatusLabel(text: bleManager.statusText)
                 .padding(.bottom, 12)
         }

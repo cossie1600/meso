@@ -9,23 +9,18 @@ import Foundation
 
 struct AppConfig {
     // 🎛️ Environment-Specific Toggles
-#if DEBUG
-    // 🧪 Testing Environment Settings
-    static let useMockSimulatorBridge: Bool = true  // Set to false when you want to test real hardware locally
-    static let forceInitialEmergencyState: Bool = false // Toggle true to force-test emergency states instantly
+    static let useMockSimulatorBridge: Bool = false
+    static let forceInitialEmergencyState: Bool = false
     static let simulatorSpeedSec: TimeInterval = 5.0
     enum MockFormat { case csv, json }
     static let activeMockFormat: MockFormat = .json
-#else
-    // 🚀 Production Environment Settings (Hard locked, safe from accidental changes)
-    //    static let useMockSimulatorBridge: Bool = false
-    //    static let forceInitialEmergencyState: Bool = false
-    //    static let simulatorSpeedSec: TimeInterval = 5.0
-#endif
+    
+    // This is power thrifting mode firmware
+    static let firmwareServiceUUIDString: String = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
     
     // app info
     static let companyName = "ClingGem"
-    static let bluetoothDeviceName = "Meso Sensor"
+    static let bluetoothDeviceName = "Meso Pin"
     
     
     // 🧹 Database Cleanup Policy
