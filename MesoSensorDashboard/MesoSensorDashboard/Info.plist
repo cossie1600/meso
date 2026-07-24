@@ -2,11 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>UIFileSharingEnabled</key>
-	<true/>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>This application requires a permanent Bluetooth connection to collect real-time data metrics from your ESP32 air sensor device.</string>
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Meso Pin requires continuous Bluetooth access to background-scan for localized particulate matter spikes and sync ambient air quality telemetry.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>Meso Pin requires Bluetooth access to connect to your air quality sensor and execute safe data synchronization handshakes.</string>
     <key>CFBundleIdentifier</key>
-        <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>bluetooth-central</string>
+    </array>
 </dict>
 </plist>

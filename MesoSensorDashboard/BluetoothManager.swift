@@ -39,7 +39,10 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     @Published var pm25Value: String = "--"
     @Published var pm10Value: String = "--"
     
-    // MARK: - 2. The Initializer (PUT IT RIGHT HERE)
+    // Streaming chunk assembly buffer for multi-core BLE notifications
+    private var incomingStringBuffer = ""
+    
+    // MARK: - Initializer
     init(modelContainer: ModelContainer? = nil) {
         if let container = modelContainer {
             self.modelContainer = container
@@ -74,8 +77,10 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             AppLogger.writeLog("Real BLE Hardware Mode Active. Instantiating Central Manager.")
             
 #if !targetEnvironment(simulator)
-            // 1. Only initialize the hardware manager here. Do not call any scanning methods yet!
-            centralManager = CBCentralManager(delegate: self, queue: nil)
+            // Initialize the hardware manager using options optimized for background restoration if needed
+            centralManager = CBCentralManager(delegate: self, queue: nil, options: [
+                CBCentralManagerOptionRestoreIdentifierKey: "MesoPinBackgroundRestoreKey"
+            ])
 #else
             AppLogger.writeLog("Execution stopped: Cannot run BLE hardware on an iOS Simulator window.")
             self.statusText = "Error: Use Simulator Bridge on Mac."
@@ -88,30 +93,32 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         
         if AppConfig.useMockSimulatorBridge {
             AppLogger.writeLog("🤖 Simulator adapting behavior to strategy: \(factor)")
-            // Restart the timer with the updated speed (1-minute vs 15-minute emulation pace)
             startMockDataStream()
         } else {
-            // Real hardware path
             guard let actualPeripheral = peripheral else { return }
             let sleepMinutes = (factor == .batterySaver) ? 15 : 1
             let payloadString = "SLEEP:\(sleepMinutes)"
             if let data = payloadString.data(using: .utf8) {
-                //actualPeripheral.writeValue(data, for: writeCharacteristic, type: .withResponse)
+                // actualPeripheral.writeValue(data, for: writeCharacteristic, type: .withResponse)
                 AppLogger.writeLog("📡 Sent operational directive to ESP32: Sleep for \(sleepMinutes) min")
             }
         }
     }
     
-    // Step 4A: Check if iPhone Bluetooth is turned on
+    // MARK: - CBCentralManagerDelegate
+    
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
-            AppLogger.writeLog("Bluetooth hardware status: Powered On. Beginning scan sequence...")
+            AppLogger.writeLog("Bluetooth hardware status: Powered On. Beginning background-sentry scan...")
             self.statusText = "Scanning for ESP32..."
             
             let targetServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
             
-            self.centralManager?.scanForPeripherals(withServices: nil, options: nil)
+            // STRICT SERVICE FILTERING: Required for background execution and STRATOS wakeup tracking
+            self.centralManager?.scanForPeripherals(withServices: [targetServiceUUID], options: [
+                CBCentralManagerScanOptionAllowDuplicatesKey: NSNumber(value: true)
+            ])
             
         case .poweredOff:
             AppLogger.writeLog("Bluetooth hardware status: Powered Off.")
@@ -126,42 +133,34 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
     }
     
-    // Step 4B: Found a Bluetooth device! Let's check if it's our ESP32
     func centralManager(_ central: CBCentralManager,
                         didDiscover peripheral: CBPeripheral,
                         advertisementData: [String : Any],
                         rssi RSSI: NSNumber) {
-        AppLogger.writeLog("Found device: \(peripheral.name ?? "Unknown")")
         
         let deviceName = peripheral.name ?? "Unnamed Local Device"
         AppLogger.writeLog("Found radio signature: \(deviceName) [RSSI: \(RSSI)]")
         
-        // 1. Strict prefix matching to target your dynamic "Meso Pin-XXXX" devices
+        // Strict prefix matching to target your dynamic "Meso Pin-XXXX" devices
         if deviceName.hasPrefix("Meso Pin") {
             AppLogger.writeLog("Target match confirmed! Halting scan and attempting link...")
             
-            // 2. Halt scanning immediately to clear the hardware state
             self.centralManager?.stopScan()
-            
-            // 3. Keep a strong pointer reference to the raw discovered peripheral
             self.connectedPeripheral = peripheral
-            
-            // 4. Update UI status
             self.statusText = "Connecting to \(deviceName)..."
             
-            // 5. Initiate the handshake (We set the delegate ONLY inside the didConnect callback)
+            // Handshake execution initiated (Delegate configuration occurs inside didConnect)
             self.centralManager?.connect(peripheral, options: nil)
         }
     }
     
-    // Step 4C: Connected! Now find the data channels (Services)
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         AppLogger.writeLog("Swift BLE: Successfully connected to: \(peripheral.name ?? "Unknown")")
         
-        // Assign the delegate here, at the exact moment of connection
+        // Assign delegate inside didConnect to protect strong object reference state
         peripheral.delegate = self
+        incomingStringBuffer = ""
         
-        // Discover the customized service
         peripheral.discoverServices([CBUUID(string: AppConfig.firmwareServiceUUIDString)])
     }
     
@@ -169,42 +168,80 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         let errorDescription = error?.localizedDescription ?? "Unknown error"
         AppLogger.writeLog("Swift BLE ERROR: Failed to establish link to \(peripheral.name ?? "Device"): \(errorDescription)")
         
-        // Reset our local tracking variable
         self.connectedPeripheral = nil
         self.statusText = "Connection failed. Retrying scan..."
         
-        // Restart scanning so the app can try to connect again
         let targetServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
-        self.centralManager?.scanForPeripherals(withServices: [targetServiceUUID], options: nil)
+        self.centralManager?.scanForPeripherals(withServices: [targetServiceUUID], options: [
+            CBCentralManagerScanOptionAllowDuplicatesKey: NSNumber(value: true)
+        ])
     }
     
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        AppLogger.writeLog("Swift BLE: Connection dropped. Re-entering background-sentry scan.")
+        self.connectedPeripheral = nil
+        self.statusText = "Disconnected. Scanning..."
+        
+        let targetServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
+        self.centralManager?.scanForPeripherals(withServices: [targetServiceUUID], options: [
+            CBCentralManagerScanOptionAllowDuplicatesKey: NSNumber(value: true)
+        ])
+    }
+    
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
+        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral], let restoredPeripheral = peripherals.first {
+            AppLogger.writeLog("Swift BLE: Restoring peripheral session out of core suspension.")
+            self.connectedPeripheral = restoredPeripheral
+            self.connectedPeripheral?.delegate = self
+        }
+    }
+    
+    // MARK: - CBPeripheralDelegate
+    
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let services = peripheral.services else { return }
+        if let error = error {
+            AppLogger.writeLog("GATT Service Discovery Error: \(error.localizedDescription)")
+            return
+        }
+        
+        guard let services = peripheral.services, !services.isEmpty else {
+            AppLogger.writeLog("GATT Handshake Stalled: Connected, but zero services were discovered. Check ESP32 Service UUID.")
+            return
+        }
+        
+        AppLogger.writeLog("Discovered \(services.count) services. Looking for characteristics...")
         for service in services {
+            AppLogger.writeLog("   -> Service UUID found: \(service.uuid.uuidString)")
             peripheral.discoverCharacteristics(nil, for: service)
         }
     }
     
-    // Step 4D: Find the specific text stream (Characteristic) and listen to it
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard let characteristics = service.characteristics else { return }
+        if let error = error {
+            AppLogger.writeLog("GATT Characteristic Discovery Error: \(error.localizedDescription)")
+            return
+        }
         
+        guard let characteristics = service.characteristics else {
+            AppLogger.writeLog("No characteristics found for service: \(service.uuid.uuidString)")
+            return
+        }
+        
+        AppLogger.writeLog("Discovered \(characteristics.count) characteristics for service \(service.uuid.uuidString)")
         for characteristic in characteristics {
-            // Dynamically inspect the characteristic's properties.
-            // We only subscribe if the device says it actively supports notify or indicate.
             let canNotify = characteristic.properties.contains(.notify)
             let canIndicate = characteristic.properties.contains(.indicate)
             
+            AppLogger.writeLog("   -> Char: \(characteristic.uuid.uuidString) | Notify: \(canNotify) | Indicate: \(canIndicate)")
+            
             if canNotify || canIndicate {
-                print("Found dynamic data stream: \(characteristic.uuid.uuidString). Subscribing...")
+                AppLogger.writeLog("Subscribing to data stream updates for \(characteristic.uuid.uuidString)")
                 peripheral.setNotifyValue(true, for: characteristic)
-            } else {
-                print("Skipping static system characteristic: \(characteristic.uuid.uuidString)")
             }
         }
     }
     
-    // Step 4E: Catch the JSON packet, parse it, and commit it to SQLite
+    // MARK: - Fragment Assembly & Ingestion Protocol
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         if let error = error {
             AppLogger.writeLog("Bluetooth notification error: \(error.localizedDescription)")
@@ -212,31 +249,52 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
         
         guard let data = characteristic.value,
-              let dataString = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+              let chunk = String(data: data, encoding: .utf8) else { return }
         
-        // Create an optional packet reference to hold whichever format resolves
-        let packet: IncomingPacket?
+        incomingStringBuffer.append(chunk)
         
-        // 1. Check the prefix to detect JSON vs. Comma-Separated Values (CSV)
-        if dataString.hasPrefix("{") {
-            packet = IncomingPacket.decodeJSON(from: dataString)
-        } else {
-            packet = IncomingPacket.decodeCommaSeparatedString(from: dataString)
+        while let newLineIndex = incomingStringBuffer.firstIndex(of: "\n") {
+            let line = String(incomingStringBuffer[..<newLineIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            incomingStringBuffer.removeSubrange(..<incomingStringBuffer.index(after: newLineIndex))
+            
+            if line.isEmpty { continue }
+            // INTERCEPT SYNC HANDSHAKE TERMINATOR
+            if line.contains("SYNC_COMPLETE") {
+                AppLogger.writeLog("Ingestion: Sync complete token received from hardware.")
+                DispatchQueue.main.async {
+                    // Update the status to Live mode, clearing the syncing status
+                    self.updateStatusOnMainThread(to: "Connected (Live)")
+                }
+                continue // Skip data parsing for this control frame
+            }
+            
+            let packet: IncomingPacket? = line.hasPrefix("{") ?
+            IncomingPacket.decodeJSON(from: line) :
+            IncomingPacket.decodeCommaSeparatedString(from: line)
+            
+            guard let validPacket = packet else {
+                updateStatusOnMainThread(to: "Connected (Bad Packet)")
+                continue
+            }
+            
+            let captureTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
+            let packetFootprint = "\(captureTimestamp)_\(validPacket.pm1)_\(validPacket.pm25)_\(validPacket.pm10)"
+            
+            // Safe extraction without blocking the main queue loop
+            // Safe because the CoreBluetooth delegate queue is already the main thread
+            let isDuplicate = self.databaseAlreadyContains(footprint: packetFootprint)
+            
+            
+            if isDuplicate {
+                AppLogger.writeLog("Ingestion: Redundant frame detected. Skipping duplicate.")
+                continue
+            }
+            
+            saveToSQLite(validPacket)
+            
+            updateLiveState(with: validPacket)
+            evaluateAirQualityThresholds(for: validPacket)
         }
-        
-        // 2. Fallback if both parsing frameworks fail
-        guard let validPacket = packet else {
-            updateStatusOnMainThread(to: "Connected (Bad Packet)")
-            return
-        }
-        
-        // 3. Commit the clean records to SQLite
-        saveToSQLite(validPacket)
-        
-        // 4. Update the live UI strings
-        updateLiveState(with: validPacket)
-        evaluateAirQualityThresholds(for: validPacket)
-        
     }
     
 }

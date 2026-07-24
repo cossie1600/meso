@@ -81,6 +81,16 @@ class MyServerCallbacks: public BLEServerCallbacks {
     }
 };
 
+class MyCharacteristicCallbacks : public BLECharacteristicCallbacks {
+    void onStatus(BLECharacteristic* pCharacteristic, Status s, uint32_t code) {
+        // Look specifically for a Notification subscription update
+        if (s == SUCCESS_NOTIFY) {
+            Serial.println("BLE: iOS Client enabled Notifications! Triggering transmission...");
+            triggerSync = true;
+        }
+    }
+};
+
 String serializeSample(const pm_sample& sample) {
   StaticJsonDocument<128> doc; 
   doc["t"] = sample.timestamp_ms;
@@ -131,17 +141,19 @@ void writeBufferToFilesystem() {
 // Background task to transmit data (Core 0)
 void bleSenderTask(void* parameter) {
   while (true) {
+    // 1. SLEEP INDEFINITELY (0% CPU) until xTaskNotifyGive() wakes it up instantly on connect
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY); 
+
     if (triggerSync && deviceConnected) {
       triggerSync = false; 
-      Serial.println("BLE Task: Sync triggered! Processing archives...");
+      Serial.println("BLE Task: Sync triggered via hardware interrupt! Processing historical archives...");
 
-      // 1. Send Filesystem Data First
+      // 1. Flush Filesystem Logs
       if (xSemaphoreTake(fsMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
         bool fileExists = LittleFS.exists(FILE_PATH);
         File file;
         if (fileExists) {
           file = LittleFS.open(FILE_PATH, FILE_READ);
-          Serial.println("BLE Task: Scanning LittleFS for stored logs...");
         }
         xSemaphoreGive(fsMutex);
 
@@ -163,10 +175,11 @@ void bleSenderTask(void* parameter) {
             if (!hasLine) break;
 
             if (line.length() > 0) {
+              line += "\n";
               pDataCharacteristic->setValue(line.c_str());
               pDataCharacteristic->notify(); 
               count++;
-              vTaskDelay(pdMS_TO_TICKS(15)); 
+              vTaskDelay(pdMS_TO_TICKS(20)); 
             }
           }
           
@@ -181,7 +194,7 @@ void bleSenderTask(void* parameter) {
         }
       }
 
-      // 2. Send Volatile RAM Data
+      // 2. Flush Offline RAM Logs
       std::vector<pm_sample> tempBuffer;
       portENTER_CRITICAL(&ramSpinlock);
       if (!memoryBuffer.empty()) {
@@ -191,18 +204,25 @@ void bleSenderTask(void* parameter) {
       portEXIT_CRITICAL(&ramSpinlock); 
 
       if (!tempBuffer.empty() && deviceConnected) {
-        Serial.printf("BLE Task: Sending %d fresh RAM records...\n", tempBuffer.size());
+        Serial.printf("BLE Task: Sending %d offline RAM records...\n", tempBuffer.size());
         for (const auto& sample : tempBuffer) {
           if (!deviceConnected) break; 
-          String line = serializeSample(sample);
+          String line = serializeSample(sample) + "\n";
           pDataCharacteristic->setValue(line.c_str());
           pDataCharacteristic->notify();
-          vTaskDelay(pdMS_TO_TICKS(15)); 
+          vTaskDelay(pdMS_TO_TICKS(20)); 
         }
-        Serial.println("BLE Task: Fresh RAM dispatch finished.");
+        Serial.println("BLE Task: Offline RAM dispatch finished.");
+      }
+
+      // 3. NEW: Notify iOS that the catch-up phase is completely done
+      if (deviceConnected) {
+        String endToken = "{\"status\":\"SYNC_COMPLETE\"}\n";
+        pDataCharacteristic->setValue(endToken.c_str());
+        pDataCharacteristic->notify();
+        Serial.println("BLE Task: Sent SYNC_COMPLETE token to iOS client.");
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(100)); 
   }
 }
 
@@ -261,6 +281,7 @@ void setup() {
                           BLECharacteristic::PROPERTY_NOTIFY
                         );
   pDataCharacteristic->addDescriptor(new BLE2902());
+  pDataCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
   pService->start();
   
   // BLEDevice::startAdvertising();
@@ -370,13 +391,21 @@ void calculateAndBufferMean(float pm1Sum, float pm25Sum, float pm10Sum, int tota
     newSample.pm2_5 = pm25Sum / totalSamples;
     newSample.pm10 = pm10Sum / totalSamples;
 
-    portENTER_CRITICAL(&ramSpinlock);
-    memoryBuffer.push_back(newSample);
-    portEXIT_CRITICAL(&ramSpinlock);
-    
-    Serial.printf("AVERAGE: PM1=%.2f, PM2.5=%.2f, PM10=%.2f (Buffered in RAM)\n", newSample.pm1, newSample.pm2_5, newSample.pm10);
+    if (deviceConnected) {
+      // Stream immediately to the open BLE channel
+      String line = serializeSample(newSample) + "\n";
+      pDataCharacteristic->setValue(line.c_str());
+      pDataCharacteristic->notify();
+      Serial.println("BLE: Streamed fresh sample immediately to connected client.");
+    } else {
+      // Fall back to RAM storage only if disconnected
+      portENTER_CRITICAL(&ramSpinlock);
+      memoryBuffer.push_back(newSample);
+      portEXIT_CRITICAL(&ramSpinlock);
+      Serial.println("AVERAGE: Buffered in RAM (No BLE Client connected).");
+    }
   } else {
-    Serial.println("WARNING: Window finished with 0 valid samples. Skipping buffering.");
+    Serial.println("WARNING: Window finished with 0 valid samples.");
   }
 }
 
