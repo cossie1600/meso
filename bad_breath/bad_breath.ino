@@ -3,12 +3,16 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <FS.h>         
-#include <SD.h>          
+
+#include <SPIFFS.h>
 #include <bsec2.h>
-#include "bsec_iaq.h"
 
 BLECharacteristic *pCharacteristic;
-#define BUTTON_PIN 9     // ESP32-C6 BOOT button (GPIO 9)
+#define BUTTON_PIN 9     // ESP32-C6 BOOT button (GPIO 9) for digitalRead checks
+#define WAKEUP_PIN 4     // RTC-capable GPIO for deep sleep wakeup on ESP32-C6
+#define I2C_SDA 6        // Pin Definitions for ESP32-C6
+#define I2C_SCL 7
+
 // Standard Bluetooth SIG UUID for Environmental Sensing
 #define SERVICE_UUID           "0000181a-0000-1000-8000-00805f9b34fb" 
 #define CHARACTERISTIC_UUID    "00002a6e-0000-1000-8000-00805f9b34fb"
@@ -16,10 +20,9 @@ BLECharacteristic *pCharacteristic;
 Bsec2 bsec;
 bool isButtonPressed = false;
 String log_prefix = "bme688_runtime_logs";
-String BLE_Name = "Meso Nose";
-// ==========================================================
+String Device_Name = "Meso Nose";
+
 // Global Shared Variables for BSEC2 Callback
-// ==========================================================
 volatile bool newGasDataAvailable = false;
 volatile float latestGasResistance = 0.0f;
 volatile float latestIaq = 0.0f;
@@ -33,6 +36,11 @@ bool isCheckingBreath = false;
 void logMessage(const String& msg);
 void checkBsecStatus(Bsec2& bsec);
 void initBLE();
+void waitForSerialWakeupNstartSPIFF();
+void recoverI2C();
+void runBreathTest();
+void goToSleep();
+void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsec);
 
 String getCurrentDateTime() {
   unsigned long allSeconds = millis() / 1000;
@@ -51,7 +59,7 @@ void logMessage(const String &message) {
     
     String file_path = "/" + log_prefix + ".txt";
 
-    File file = SD.open(file_path, FILE_APPEND);
+    File file = SPIFFS.open(file_path, FILE_APPEND);
     if (file) {
       file.println(log_message);
       file.close();
@@ -63,57 +71,76 @@ void logMessage(const String &message) {
 void setup() {
   Serial.begin(115200);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-  
+    
+  waitForSerialWakeupNstartSPIFF();
 
-  // Wait up to 3 seconds for Serial Monitor to open (Requires USB CDC Enabled)
-  while (!Serial && millis() < 3000);
-  logMessage("starting " + BLE_Name);
+  logMessage("starting " + Device_Name);
 
-  Wire.begin(6, 7); 
-
-  // 1. Initialize BSEC2
-  if (!bsec.begin(BME68X_I2C_ADDR_HIGH, Wire)) {
-    logMessage("Could not find a valid sensor, check wiring!");
-    while (1);
-  }
-  checkBsecStatus(bsec); 
-
-  // 2. Load the stock IAQ config (from bsec_iaq.c)
-  if (!bsec.setConfig(bsec_config_iaq)) {
-    logMessage("Failed to set BSEC IAQ configuration!");
-  }
-  checkBsecStatus(bsec);
-
-  // 3. Subscribe to valid outputs supported by the IAQ config
-  bsec_virtual_sensor_t sensorList[] = {
-    BSEC_OUTPUT_RAW_GAS,
-    BSEC_OUTPUT_IAQ,
-    BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
-    BSEC_OUTPUT_RAW_TEMPERATURE,
-    BSEC_OUTPUT_RAW_HUMIDITY
-  };
-  bsec.updateSubscription(sensorList, 5, BSEC_SAMPLE_RATE_LP);
-  bsec.attachCallback(newDataCallback);
-  checkBsecStatus(bsec);
-
-  // Initialize BLE on the ESP32-C6
+  recoverI2C();
   initBLE();
+
+  // Configure RTC wakeup pin (GPIO 4) for ESP32-C6
+  #if defined(SOC_PM_SUPPORT_EXT1_WAKEUP) || defined(CONFIG_IDF_TARGET_ESP32C6)
+    esp_sleep_enable_ext1_wakeup(1ULL << WAKEUP_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
+  #else
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKEUP_PIN, 0); 
+  #endif
+
+  // Explicit raw channels supported out-of-the-box by standard BSEC ROM
+  bsecSensor sensorList[] = {
+    BSEC_OUTPUT_RAW_GAS,
+    BSEC_OUTPUT_RAW_TEMPERATURE,
+    BSEC_OUTPUT_RAW_HUMIDITY,
+    BSEC_OUTPUT_RAW_PRESSURE
+  };
+    
+  uint8_t sensorAddr = BME68X_I2C_ADDR_HIGH;
+
+  if (!bsec.begin(sensorAddr, Wire)) {
+    logMessage("Could not find BME688 at 0x77, trying 0x76 fallback...");
+    sensorAddr = BME68X_I2C_ADDR_LOW;
+    
+    if (!bsec.begin(sensorAddr, Wire)) {
+      logMessage("ERROR: BME688 not found at 0x77 or 0x76!");
+      checkBsecStatus(bsec);
+      return;
+    }
+  }
+  logMessage("BME688 successfully connected and initialized!");
+  
+  // Attach callback so bsec.run() populates latestGasResistance!
+  bsec.attachCallback(newDataCallback);
+
+  uint8_t numSensors = sizeof(sensorList) / sizeof(bsecSensor);
+  if (!bsec.updateSubscription(sensorList, numSensors, BSEC_SAMPLE_RATE_LP)) {
+    logMessage("ERROR: Failed to update subscription!");
+    checkBsecStatus(bsec);
+  } else {
+    logMessage("BSEC Subscription updated successfully!");
+  }  
+  checkBsecStatus(bsec);
 
   runBreathTest();
   goToSleep();
 }
 
 void loop() {
-  // Empty! Execution reboots through setup() on every button press wakeup.
+  if (bsec.run()) {
+    logMessage("Data sampled successfully!");
+  } else {
+    checkBsecStatus(bsec);
+  }
+  delay(10);
 }
 
-// --- Helper Function for BLE Setup ---
 void sendBleMessage(const char* message) {
+  logMessage(message);
   pCharacteristic->setValue(message); 
   pCharacteristic->notify();          
 }
+
 void initBLE() {
-  BLEDevice::init(BLE_Name);
+  BLEDevice::init(Device_Name);
   
   BLEServer *pServer = BLEDevice::createServer();
   BLEService *pService = pServer->createService(SERVICE_UUID);
@@ -130,22 +157,23 @@ void initBLE() {
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->start();
   
-  logMessage("BLE initialized and advertising as " + BLE_Name);
+  logMessage("BLE initialized and advertising as " + Device_Name);
 }
 
-// Helper function to inspect and print BSEC status or warnings
-void checkBsecStatus(Bsec2& bsec) {
+void checkBsecStatus(Bsec2 &bsec) {
     if (bsec.status < BSEC_OK) {
         logMessage("BSEC Error Code: " + String(bsec.status));
     } else if (bsec.status > BSEC_OK) {
         logMessage("BSEC Warning Code: " + String(bsec.status));
     }
+    if (bsec.sensor.status < BME68X_OK) {
+      logMessage("BME688 Sensor Error Code: " + String(bsec.sensor.status));
+    } else if (bsec.sensor.status > BME68X_OK) {
+      logMessage("BME688 Sensor Warning Code: " + String(bsec.sensor.status));
+    }     
 }
 
-void runBreathTest() {
-  // ==========================================
-  // STAGE 1: AMBIENT SAMPLING
-  // ==========================================
+float ambientSampling(){
   sendBleMessage("STATE:SAMPLING");
 
   float ambientSum = 0;
@@ -170,21 +198,20 @@ void runBreathTest() {
   }
 
   float r_ambient = ambientSum / validSamples;
+  return r_ambient;
+}
 
-  // ==========================================
-  // STAGE 2: READY TO BLOW (Notify App!)
-  // ==========================================
-  sendBleMessage("STATE:READY");  // <-- App triggers prompt/sound here
+bool wait10SecForBreathBlow(){
+  sendBleMessage("STATE:READY");
 
   uint32_t readyStart = millis();
   bool userStartedBlowing = false;
 
-  // Wait up to 10s for button hold
   while (millis() - readyStart < 10000) {
     bsec.run(); 
 
     if (digitalRead(BUTTON_PIN) == LOW) {
-      delay(200); // Debounce
+      delay(200);
       if (digitalRead(BUTTON_PIN) == LOW) {
         userStartedBlowing = true;
         break; 
@@ -193,21 +220,16 @@ void runBreathTest() {
     delay(20);
   }
 
-  if (!userStartedBlowing) {
-    sendBleMessage("STATE:TIMEOUT");
-    return;
-  }
+  return userStartedBlowing;
+}
 
-  // ==========================================
-  // STAGE 3: BREATH MEASUREMENT
-  // ==========================================
+float getBreathMinIndex(const float r_ambient){
   sendBleMessage("STATE:TESTING");
 
   float r_breath_min = r_ambient; 
   uint32_t blowStart = millis();
 
-  // Measure for 3s during blow
-  while (millis() - blowStart < 3000) {
+  while (millis() - blowStart < 7000) {
     if (bsec.run()) {
       if (newGasDataAvailable) {
         if (latestGasResistance < r_breath_min) {
@@ -219,22 +241,34 @@ void runBreathTest() {
     delay(10);
   }
 
-  // ==========================================
-  // FINAL RESULT TRANSMISSION
-  // ==========================================
-  float deltaDrop = (1.0 - (r_breath_min / r_ambient)) * 100.0;
+  return r_breath_min;
+}
 
+void runBreathTest() {
   char bleBuffer[64];
+
+  float r_ambient = ambientSampling();
+
+  bool userBreathTaken = wait10SecForBreathBlow();
+  if (!userBreathTaken) {
+    sendBleMessage("STATE:TIMEOUT");
+    return;
+  }
+
+  float r_breath_min = getBreathMinIndex(r_ambient);
+
+  float deltaDrop = (1.0 - (r_breath_min / r_ambient)) * 100.0; 
   snprintf(bleBuffer, sizeof(bleBuffer), "DROP:%.1f,AMB:%.0f,BREATH:%.0f", 
            deltaDrop, r_ambient, r_breath_min);
 
   sendBleMessage(bleBuffer);
 
-  delay(1000); // Allow BLE packet to flush before sleep
+  delay(1000); 
 }
 
 void goToSleep() {
-  esp_sleep_enable_ext1_wakeup(1ULL << BUTTON_PIN, ESP_EXT1_WAKEUP_ALL_LOW);
+  // Use WAKEUP_PIN (GPIO 4) instead of BUTTON_PIN (GPIO 9) for RTC sleep
+  esp_sleep_enable_ext1_wakeup(1ULL << WAKEUP_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
   esp_deep_sleep_start();
 }
 
@@ -249,8 +283,37 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
       newGasDataAvailable = true;
     }
     else if (output.sensor_id == BSEC_OUTPUT_IAQ) {
-      latestIaq = output.signal; // Capture IAQ score
-      iaqAccuracy = output.accuracy; // 0 = Uncalibrated, 1-3 = Calibrated
+      latestIaq = output.signal;
+      iaqAccuracy = output.accuracy;
     }
   }
+}
+
+void waitForSerialWakeupNstartSPIFF() {
+  while (!Serial && millis() < 3000);
+  
+  if (!SPIFFS.begin(true)) { 
+    logMessage("An Error has occurred while mounting SPIFFS");
+  } else {
+    logMessage("SPIFFS mounted successfully");
+  }
+}
+
+void recoverI2C() {
+  pinMode(I2C_SDA, OUTPUT);
+  pinMode(I2C_SCL, OUTPUT);
+  digitalWrite(I2C_SDA, HIGH);
+  digitalWrite(I2C_SCL, HIGH);
+
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(I2C_SCL, LOW);
+    delayMicroseconds(5);
+    digitalWrite(I2C_SCL, HIGH);
+    delayMicroseconds(5);
+  }
+
+  Wire.end();
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(100000);
+  delay(100);
 }
