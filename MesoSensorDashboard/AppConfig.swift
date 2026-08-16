@@ -10,7 +10,7 @@ import SwiftUI
 
 struct AppConfig {
     // 🎛️ Environment-Specific Toggles
-    static let useMockSimulatorBridge: Bool = true
+    static let useMockSimulatorBridge: Bool = false
     static let forceInitialEmergencyState: Bool = false
     static let simulatorSpeedSec: TimeInterval = 5.0
     enum MockFormat { case csv, json }

@@ -25,28 +25,59 @@ enum AlertVisualTheme {
 class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDelegate, CBPeripheralDelegate {
     
     @Published var currentStrategy: ConnectionStrategy
-    @Published var connectedPeripheral: CBPeripheral?
     @Published var alertMessage: String? = nil
     @Published var alertTheme: AlertVisualTheme = .none
+    
+    // Multi-Device Management (Retains references to both Meso Pin and Meso Nose)
+    @Published var connectedPeripherals: [UUID: CBPeripheral] = [:]
+    @Published var writeCharacteristics: [UUID: CBCharacteristic] = [:]
+    
+    // Legacy single-peripheral accessors for existing protocol extensions
+    var connectedPeripheral: CBPeripheral? {
+        connectedPeripherals.values.first
+    }
+    
+    var firmwarePeripheral: CBPeripheral? {
+        get {
+            return connectedPeripherals.values.first { $0.name?.hasPrefix(AppConfig.bluetoothDeviceName) == true }
+                ?? connectedPeripherals.values.first
+        }
+        set {
+            if let newValue = newValue {
+                connectedPeripherals[newValue.identifier] = newValue
+            }
+        }
+    }
+    
+    var writeCharacteristic: CBCharacteristic? {
+        get {
+            if let pin = firmwarePeripheral {
+                return writeCharacteristics[pin.identifier]
+            }
+            return writeCharacteristics.values.first
+        }
+        set {
+            if let pin = firmwarePeripheral, let newValue = newValue {
+                writeCharacteristics[pin.identifier] = newValue
+            }
+        }
+    }
+    
     var mockDataTimer: Timer?
     var modelContainer: ModelContainer?
-    var firmwarePeripheral: CBPeripheral?
     var centralManager: CBCentralManager?
-    
-    // Active write characteristic for outgoing device commands (Meso Nose & Meso Pin)
-    @Published var writeCharacteristic: CBCharacteristic?
     
     // Meso Nose (BME688) Historical In-Memory Stream
     @Published var mesoNoseSamples: [MesoNoseSample] = []
     
-    // This tells SwiftUI to update the screen whenever these change
+    // Live UI State Properties
     @Published var statusText: String = "Initializing..."
     @Published var pm1Value: String = "--"
     @Published var pm25Value: String = "--"
     @Published var pm10Value: String = "--"
     
-    // Streaming chunk assembly buffer for multi-core BLE notifications
-    private var incomingStringBuffer = ""
+    // Per-device streaming chunk assembly buffers
+    private var incomingBuffers: [UUID: String] = [:]
     
     // MARK: - Initializer
     init(modelContainer: ModelContainer? = nil) {
@@ -54,7 +85,6 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             self.modelContainer = container
         } else {
             do {
-                // Fallback: Safe, temporary in-memory container for Previews/Simulators
                 let config = ModelConfiguration(isStoredInMemoryOnly: true)
                 self.modelContainer = try ModelContainer(for: DB_PMSample.self, configurations: config)
                 AppLogger.writeLog("🧠 In-Memory Test Database Container Initialized.")
@@ -64,7 +94,6 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             }
         }
         
-        // 1. Decouple initial state selection
         if AppConfig.forceInitialEmergencyState {
             self.currentStrategy = .emergency
             self.alertMessage = "DEBUG: Forced Emergency Active"
@@ -74,7 +103,6 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         
         super.init()
         
-        // 2. Decouple execution pipeline
         if AppConfig.useMockSimulatorBridge {
             AppLogger.writeLog("Mock Simulator Bridge Active. Bypassing BLE Hardware.")
             self.statusText = "Connected (Mock Simulator)"
@@ -83,7 +111,6 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             AppLogger.writeLog("Real BLE Hardware Mode Active. Instantiating Central Manager.")
             
 #if !targetEnvironment(simulator)
-            // Initialize the hardware manager using options optimized for background restoration if needed
             centralManager = CBCentralManager(delegate: self, queue: nil, options: [
                 CBCentralManagerOptionRestoreIdentifierKey: "MesoPinBackgroundRestoreKey"
             ])
@@ -94,6 +121,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
     }
     
+    // MARK: - Directives & Commands
     func sendSleepIntervalToPeripheral(_ peripheral: CBPeripheral?, factor: ConnectionStrategy) {
         self.currentStrategy = factor
         
@@ -101,12 +129,14 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             AppLogger.writeLog("🤖 Simulator adapting behavior to strategy: \(factor)")
             startMockDataStream()
         } else {
-            guard let actualPeripheral = peripheral, let char = writeCharacteristic else { return }
+            guard let target = peripheral ?? firmwarePeripheral ?? connectedPeripherals.values.first,
+                  let char = writeCharacteristics[target.identifier] ?? writeCharacteristic else { return }
+            
             let sleepMinutes = (factor == .batterySaver) ? 15 : 1
             let payloadString = "SLEEP:\(sleepMinutes)"
             if let data = payloadString.data(using: .utf8) {
-                actualPeripheral.writeValue(data, for: char, type: .withResponse)
-                AppLogger.writeLog("📡 Sent operational directive to ESP32: Sleep for \(sleepMinutes) min")
+                target.writeValue(data, for: char, type: .withResponse)
+                AppLogger.writeLog("📡 Sent operational directive to \(target.name ?? "Device"): Sleep for \(sleepMinutes) min")
             }
         }
     }
@@ -116,16 +146,9 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
-            AppLogger.writeLog("Bluetooth hardware status: Powered On. Beginning scan...")
+            AppLogger.writeLog("Bluetooth hardware status: Powered On. Beginning dual-device scan...")
             self.statusText = "Scanning for Meso Sensors..."
-            
-            let pinServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
-            let noseServiceUUID = CBUUID(string: AppConfig.mesoNoseServiceUUIDString)
-            
-            // Scan for both Meso Pin and Meso Nose service signatures
-            self.centralManager?.scanForPeripherals(withServices: [pinServiceUUID, noseServiceUUID], options: [
-                CBCentralManagerScanOptionAllowDuplicatesKey: NSNumber(value: true)
-            ])
+            startScanning()
             
         case .poweredOff:
             AppLogger.writeLog("Bluetooth hardware status: Powered Off.")
@@ -140,70 +163,105 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
     }
     
+    /// Scans for all nearby BLE devices (withServices: nil) so firmware with non-advertised UUIDs is discovered.
+    func startScanning() {
+        guard centralManager?.state == .poweredOn else { return }
+        
+        AppLogger.writeLog("📡 Starting BLE peripheral scan for Meso Pin & Meso Nose...")
+        centralManager?.scanForPeripherals(
+            withServices: nil, // Discover all devices; filter by name/UUID in didDiscover
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+        )
+    }
+    
     func centralManager(_ central: CBCentralManager,
                         didDiscover peripheral: CBPeripheral,
                         advertisementData: [String : Any],
                         rssi RSSI: NSNumber) {
         
-        let deviceName = peripheral.name ?? "Unnamed Local Device"
-        AppLogger.writeLog("Found radio signature: \(deviceName) [RSSI: \(RSSI)]")
+        let deviceName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? "Unnamed Local Device"
         
-        // Match either "Meso Pin" or "Meso Nose"
-        if deviceName.hasPrefix(AppConfig.bluetoothDeviceName) || deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName) {
-            AppLogger.writeLog("Target match confirmed (\(deviceName))! Halting scan and attempting link...")
+        // Match names defined in AppConfig
+        let isMesoPin = deviceName.hasPrefix(AppConfig.bluetoothDeviceName)
+        let isMesoNose = deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName)
+        
+        if isMesoPin || isMesoNose {
+            let deviceID = peripheral.identifier
             
-            self.centralManager?.stopScan()
-            self.connectedPeripheral = peripheral
-            self.statusText = "Connecting to \(deviceName)..."
-            
-            self.centralManager?.connect(peripheral, options: nil)
+            // Connect only if not already tracked
+            if connectedPeripherals[deviceID] == nil {
+                AppLogger.writeLog("🎯 Target match found: \(deviceName) [ID: \(deviceID)] RSSI: \(RSSI)")
+                
+                connectedPeripherals[deviceID] = peripheral
+                incomingBuffers[deviceID] = ""
+                peripheral.delegate = self
+                
+                DispatchQueue.main.async {
+                    self.statusText = "Connecting to \(deviceName)..."
+                }
+                
+                self.centralManager?.connect(peripheral, options: nil)
+            }
         }
     }
     
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        AppLogger.writeLog("Swift BLE: Successfully connected to: \(peripheral.name ?? "Unknown")")
+        let deviceName = peripheral.name ?? "Unknown Device"
+        AppLogger.writeLog("✅ Swift BLE: Successfully connected to: \(deviceName)")
         
         peripheral.delegate = self
-        incomingStringBuffer = ""
+        incomingBuffers[peripheral.identifier] = ""
         
-        let pinServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
-        let noseServiceUUID = CBUUID(string: AppConfig.mesoNoseServiceUUIDString)
+        // Discover services without filtering UUIDs upfront to guarantee discovery
+        peripheral.discoverServices(nil)
         
-        peripheral.discoverServices([pinServiceUUID, noseServiceUUID])
+        DispatchQueue.main.async {
+            let count = self.connectedPeripherals.count
+            self.statusText = "Connected (\(count) Device\(count > 1 ? "s" : ""))"
+        }
+        
+        // Keep scanning so the second device can be discovered and connected
+        startScanning()
     }
     
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         let errorDescription = error?.localizedDescription ?? "Unknown error"
-        AppLogger.writeLog("Swift BLE ERROR: Failed to establish link to \(peripheral.name ?? "Device"): \(errorDescription)")
+        let deviceName = peripheral.name ?? "Device"
+        AppLogger.writeLog("Swift BLE ERROR: Failed to establish link to \(deviceName): \(errorDescription)")
         
-        self.connectedPeripheral = nil
-        self.statusText = "Connection failed. Retrying scan..."
+        connectedPeripherals.removeValue(forKey: peripheral.identifier)
+        writeCharacteristics.removeValue(forKey: peripheral.identifier)
+        incomingBuffers.removeValue(forKey: peripheral.identifier)
         
-        let pinServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
-        let noseServiceUUID = CBUUID(string: AppConfig.mesoNoseServiceUUIDString)
-        self.centralManager?.scanForPeripherals(withServices: [pinServiceUUID, noseServiceUUID], options: [
-            CBCentralManagerScanOptionAllowDuplicatesKey: NSNumber(value: true)
-        ])
+        startScanning()
     }
     
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        AppLogger.writeLog("Swift BLE: Connection dropped. Re-entering scan.")
-        self.connectedPeripheral = nil
-        self.writeCharacteristic = nil
-        self.statusText = "Disconnected. Scanning..."
+        let deviceName = peripheral.name ?? "Device"
+        AppLogger.writeLog("Swift BLE: Connection dropped for \(deviceName). Re-entering scan.")
         
-        let pinServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
-        let noseServiceUUID = CBUUID(string: AppConfig.mesoNoseServiceUUIDString)
-        self.centralManager?.scanForPeripherals(withServices: [pinServiceUUID, noseServiceUUID], options: [
-            CBCentralManagerScanOptionAllowDuplicatesKey: NSNumber(value: true)
-        ])
+        connectedPeripherals.removeValue(forKey: peripheral.identifier)
+        writeCharacteristics.removeValue(forKey: peripheral.identifier)
+        incomingBuffers.removeValue(forKey: peripheral.identifier)
+        
+        DispatchQueue.main.async {
+            if self.connectedPeripherals.isEmpty {
+                self.statusText = "Disconnected. Scanning..."
+            } else {
+                self.statusText = "Connected (\(self.connectedPeripherals.count) Active)"
+            }
+        }
+        
+        startScanning()
     }
     
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
-        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral], let restoredPeripheral = peripherals.first {
-            AppLogger.writeLog("Swift BLE: Restoring peripheral session out of core suspension.")
-            self.connectedPeripheral = restoredPeripheral
-            self.connectedPeripheral?.delegate = self
+        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+            for restoredPeripheral in peripherals {
+                AppLogger.writeLog("Swift BLE: Restoring peripheral session: \(restoredPeripheral.name ?? "Device")")
+                connectedPeripherals[restoredPeripheral.identifier] = restoredPeripheral
+                restoredPeripheral.delegate = self
+            }
         }
     }
     
@@ -216,13 +274,12 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
         
         guard let services = peripheral.services, !services.isEmpty else {
-            AppLogger.writeLog("GATT Handshake Stalled: Zero services discovered.")
+            AppLogger.writeLog("GATT Handshake Stalled: Zero services discovered for \(peripheral.name ?? "Device").")
             return
         }
         
-        AppLogger.writeLog("Discovered \(services.count) services. Looking for characteristics...")
+        AppLogger.writeLog("Discovered \(services.count) services for \(peripheral.name ?? "Device"). Discovering characteristics...")
         for service in services {
-            AppLogger.writeLog("   -> Service UUID found: \(service.uuid.uuidString)")
             peripheral.discoverCharacteristics(nil, for: service)
         }
     }
@@ -233,24 +290,20 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             return
         }
         
-        guard let characteristics = service.characteristics else {
-            AppLogger.writeLog("No characteristics found for service: \(service.uuid.uuidString)")
-            return
-        }
+        guard let characteristics = service.characteristics else { return }
         
-        AppLogger.writeLog("Discovered \(characteristics.count) characteristics for service \(service.uuid.uuidString)")
         for characteristic in characteristics {
             let canNotify = characteristic.properties.contains(.notify)
             let canIndicate = characteristic.properties.contains(.indicate)
             let canWrite = characteristic.properties.contains(.write) || characteristic.properties.contains(.writeWithoutResponse)
             
             if canWrite {
-                self.writeCharacteristic = characteristic
-                AppLogger.writeLog("   -> Target Write Characteristic Cached: \(characteristic.uuid.uuidString)")
+                self.writeCharacteristics[peripheral.identifier] = characteristic
+                AppLogger.writeLog("  -> Cached Write Characteristic [\(peripheral.name ?? "Device")]: \(characteristic.uuid.uuidString)")
             }
             
             if canNotify || canIndicate {
-                AppLogger.writeLog("Subscribing to data stream updates for \(characteristic.uuid.uuidString)")
+                AppLogger.writeLog("  -> Subscribing to Notification Stream [\(peripheral.name ?? "Device")]: \(characteristic.uuid.uuidString)")
                 peripheral.setNotifyValue(true, for: characteristic)
             }
         }
@@ -266,17 +319,18 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         guard let data = characteristic.value,
               let chunk = String(data: data, encoding: .utf8) else { return }
         
-        incomingStringBuffer.append(chunk)
+        let deviceID = peripheral.identifier
+        incomingBuffers[deviceID, default: ""].append(chunk)
         
-        while let newLineIndex = incomingStringBuffer.firstIndex(of: "\n") {
-            let line = String(incomingStringBuffer[..<newLineIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-            incomingStringBuffer.removeSubrange(..<incomingStringBuffer.index(after: newLineIndex))
+        while let buffer = incomingBuffers[deviceID], let newLineIndex = buffer.firstIndex(of: "\n") {
+            let line = String(buffer[..<newLineIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            incomingBuffers[deviceID]?.removeSubrange(..<buffer.index(after: newLineIndex))
             
             if line.isEmpty { continue }
             
             // 1. Intercept Sync Token
             if line.contains("SYNC_COMPLETE") {
-                AppLogger.writeLog("Ingestion: Sync complete token received from hardware.")
+                AppLogger.writeLog("Ingestion: Sync complete token received.")
                 DispatchQueue.main.async {
                     self.updateStatusOnMainThread(to: "Connected (Live)")
                 }
@@ -285,7 +339,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             
             // 2. Route Meso Nose (BME688) Telemetry JSON
             if line.isMesoNosePayload {
-                AppLogger.writeLog("Ingestion: Meso Nose payload received -> \(line)")
+                AppLogger.writeLog("Ingestion: Meso Nose payload -> \(line)")
                 handleMesoNosePacket(line)
                 continue
             }
@@ -304,11 +358,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             let packetFootprint = "\(captureTimestamp)_\(validPacket.pm1)_\(validPacket.pm25)_\(validPacket.pm10)"
             
             let isDuplicate = self.databaseAlreadyContains(footprint: packetFootprint)
-            
-            if isDuplicate {
-                AppLogger.writeLog("Ingestion: Redundant frame detected. Skipping duplicate.")
-                continue
-            }
+            if isDuplicate { continue }
             
             saveToSQLite(validPacket)
             updateLiveState(with: validPacket)

@@ -18,13 +18,11 @@ struct MesoSensorDashboardApp: App {
     
     init() {
         do {
-            // 2. Spin up your physical SwiftData database container
-            let mainContainer = try ModelContainer(for: DB_PMSample.self)
+            // 2. Spin up your physical SwiftData database container registering BOTH models
+            let mainContainer = try ModelContainer(for: DB_PMSample.self, DB_MesoNoseSample.self)
             self.container = mainContainer
             
-            
             // 3. Inject the context right into the BluetoothManager initializer
-            // Swift requires backing properties (_bleManager) to be assigned manually inside an init block
             self._bleManager = StateObject(wrappedValue: BluetoothManager(modelContainer: mainContainer))
             
             #if targetEnvironment(simulator)
@@ -80,12 +78,20 @@ struct MesoSensorDashboardApp: App {
         }
         
         do {
+            // Prune PM Samples
             try context.delete(
                 model: DB_PMSample.self,
                 where: #Predicate { $0.timestamp < cutoffDate }
             )
+            
+            // Prune Meso Nose Samples
+            try context.delete(
+                model: DB_MesoNoseSample.self,
+                where: #Predicate { $0.timestamp < cutoffDate }
+            )
+            
             try context.save()
-            AppLogger.writeLog("🧹 Database cleanup complete. Kept only the last \(AppConfig.databaseRetentionDays) days of readings.")
+            AppLogger.writeLog("🧹 Database cleanup complete. Pruned PM & Meso Nose records older than \(AppConfig.databaseRetentionDays) days.")
         } catch {
             AppLogger.writeLog("❌ Failed to auto-prune database: \(error.localizedDescription)")
         }

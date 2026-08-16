@@ -7,6 +7,7 @@
 
 import Foundation
 import CoreBluetooth
+import SwiftData
 
 extension BluetoothManager {
     
@@ -68,13 +69,44 @@ extension BluetoothManager {
     }
 
     func handleMesoNosePacket(_ text: String) {
-        guard let sample = MesoNoseSample(jsonString: text) else { return }
-        
-        DispatchQueue.main.async { [weak self] in
-            self?.mesoNoseSamples.insert(sample, at: 0)
+            guard let sample = MesoNoseSample(jsonString: text) else { return }
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                // 1. Update in-memory array for live UI telemetry
+                self.mesoNoseSamples.insert(sample, at: 0)
+                
+                // 2. Persist to SwiftData
+                if let context = self.modelContainer?.mainContext {
+                    self.saveMesoNoseToDatabase(sample, context: context)
+                }
+            }
         }
-    }
+        
+        /// Inserts and saves the Meso Nose sample into SwiftData
+        func saveMesoNoseToDatabase(_ sample: MesoNoseSample, context: ModelContext) {
+            let dbRecord = DB_MesoNoseSample(
+                timestamp: Date(),
+                temp: sample.temp,
+                humidity: sample.humidity,
+                voc: sample.voc,
+                breathDropDelta: sample.breathDropDelta,
+                breathMin: sample.breathMin,
+                ptcResult: sample.ptcResult
+            )
+            
+            context.insert(dbRecord)
+            
+            do {
+                try context.save()
+                AppLogger.writeLog("💾 Saved Meso Nose sample [VOC: \(sample.voc), PTC: \(sample.ptcResult)]")
+            } catch {
+                AppLogger.writeLog("❌ SwiftData Save Error: \(error.localizedDescription)")
+            }
+        }
 }
+
 
 extension String {
     /// Inspects the raw text string to identify if it originates from the Meso Nose (BME688) firmware
