@@ -33,6 +33,12 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     var firmwarePeripheral: CBPeripheral?
     var centralManager: CBCentralManager?
     
+    // Active write characteristic for outgoing device commands (Meso Nose & Meso Pin)
+    @Published var writeCharacteristic: CBCharacteristic?
+    
+    // Meso Nose (BME688) Historical In-Memory Stream
+    @Published var mesoNoseSamples: [MesoNoseSample] = []
+    
     // This tells SwiftUI to update the screen whenever these change
     @Published var statusText: String = "Initializing..."
     @Published var pm1Value: String = "--"
@@ -95,11 +101,11 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             AppLogger.writeLog("🤖 Simulator adapting behavior to strategy: \(factor)")
             startMockDataStream()
         } else {
-            guard let actualPeripheral = peripheral else { return }
+            guard let actualPeripheral = peripheral, let char = writeCharacteristic else { return }
             let sleepMinutes = (factor == .batterySaver) ? 15 : 1
             let payloadString = "SLEEP:\(sleepMinutes)"
             if let data = payloadString.data(using: .utf8) {
-                // actualPeripheral.writeValue(data, for: writeCharacteristic, type: .withResponse)
+                actualPeripheral.writeValue(data, for: char, type: .withResponse)
                 AppLogger.writeLog("📡 Sent operational directive to ESP32: Sleep for \(sleepMinutes) min")
             }
         }
@@ -110,13 +116,14 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
-            AppLogger.writeLog("Bluetooth hardware status: Powered On. Beginning background-sentry scan...")
-            self.statusText = "Scanning for ESP32..."
+            AppLogger.writeLog("Bluetooth hardware status: Powered On. Beginning scan...")
+            self.statusText = "Scanning for Meso Sensors..."
             
-            let targetServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
+            let pinServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
+            let noseServiceUUID = CBUUID(string: AppConfig.mesoNoseServiceUUIDString)
             
-            // STRICT SERVICE FILTERING: Required for background execution and STRATOS wakeup tracking
-            self.centralManager?.scanForPeripherals(withServices: [targetServiceUUID], options: [
+            // Scan for both Meso Pin and Meso Nose service signatures
+            self.centralManager?.scanForPeripherals(withServices: [pinServiceUUID, noseServiceUUID], options: [
                 CBCentralManagerScanOptionAllowDuplicatesKey: NSNumber(value: true)
             ])
             
@@ -141,15 +148,14 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         let deviceName = peripheral.name ?? "Unnamed Local Device"
         AppLogger.writeLog("Found radio signature: \(deviceName) [RSSI: \(RSSI)]")
         
-        // Strict prefix matching to target your dynamic "Meso Pin-XXXX" devices
-        if deviceName.hasPrefix("Meso Pin") {
-            AppLogger.writeLog("Target match confirmed! Halting scan and attempting link...")
+        // Match either "Meso Pin" or "Meso Nose"
+        if deviceName.hasPrefix(AppConfig.bluetoothDeviceName) || deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName) {
+            AppLogger.writeLog("Target match confirmed (\(deviceName))! Halting scan and attempting link...")
             
             self.centralManager?.stopScan()
             self.connectedPeripheral = peripheral
             self.statusText = "Connecting to \(deviceName)..."
             
-            // Handshake execution initiated (Delegate configuration occurs inside didConnect)
             self.centralManager?.connect(peripheral, options: nil)
         }
     }
@@ -157,11 +163,13 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         AppLogger.writeLog("Swift BLE: Successfully connected to: \(peripheral.name ?? "Unknown")")
         
-        // Assign delegate inside didConnect to protect strong object reference state
         peripheral.delegate = self
         incomingStringBuffer = ""
         
-        peripheral.discoverServices([CBUUID(string: AppConfig.firmwareServiceUUIDString)])
+        let pinServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
+        let noseServiceUUID = CBUUID(string: AppConfig.mesoNoseServiceUUIDString)
+        
+        peripheral.discoverServices([pinServiceUUID, noseServiceUUID])
     }
     
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -171,19 +179,22 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         self.connectedPeripheral = nil
         self.statusText = "Connection failed. Retrying scan..."
         
-        let targetServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
-        self.centralManager?.scanForPeripherals(withServices: [targetServiceUUID], options: [
+        let pinServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
+        let noseServiceUUID = CBUUID(string: AppConfig.mesoNoseServiceUUIDString)
+        self.centralManager?.scanForPeripherals(withServices: [pinServiceUUID, noseServiceUUID], options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: NSNumber(value: true)
         ])
     }
     
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        AppLogger.writeLog("Swift BLE: Connection dropped. Re-entering background-sentry scan.")
+        AppLogger.writeLog("Swift BLE: Connection dropped. Re-entering scan.")
         self.connectedPeripheral = nil
+        self.writeCharacteristic = nil
         self.statusText = "Disconnected. Scanning..."
         
-        let targetServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
-        self.centralManager?.scanForPeripherals(withServices: [targetServiceUUID], options: [
+        let pinServiceUUID = CBUUID(string: AppConfig.firmwareServiceUUIDString)
+        let noseServiceUUID = CBUUID(string: AppConfig.mesoNoseServiceUUIDString)
+        self.centralManager?.scanForPeripherals(withServices: [pinServiceUUID, noseServiceUUID], options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: NSNumber(value: true)
         ])
     }
@@ -205,7 +216,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
         
         guard let services = peripheral.services, !services.isEmpty else {
-            AppLogger.writeLog("GATT Handshake Stalled: Connected, but zero services were discovered. Check ESP32 Service UUID.")
+            AppLogger.writeLog("GATT Handshake Stalled: Zero services discovered.")
             return
         }
         
@@ -231,8 +242,12 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         for characteristic in characteristics {
             let canNotify = characteristic.properties.contains(.notify)
             let canIndicate = characteristic.properties.contains(.indicate)
+            let canWrite = characteristic.properties.contains(.write) || characteristic.properties.contains(.writeWithoutResponse)
             
-            AppLogger.writeLog("   -> Char: \(characteristic.uuid.uuidString) | Notify: \(canNotify) | Indicate: \(canIndicate)")
+            if canWrite {
+                self.writeCharacteristic = characteristic
+                AppLogger.writeLog("   -> Target Write Characteristic Cached: \(characteristic.uuid.uuidString)")
+            }
             
             if canNotify || canIndicate {
                 AppLogger.writeLog("Subscribing to data stream updates for \(characteristic.uuid.uuidString)")
@@ -258,16 +273,24 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             incomingStringBuffer.removeSubrange(..<incomingStringBuffer.index(after: newLineIndex))
             
             if line.isEmpty { continue }
-            // INTERCEPT SYNC HANDSHAKE TERMINATOR
+            
+            // 1. Intercept Sync Token
             if line.contains("SYNC_COMPLETE") {
                 AppLogger.writeLog("Ingestion: Sync complete token received from hardware.")
                 DispatchQueue.main.async {
-                    // Update the status to Live mode, clearing the syncing status
                     self.updateStatusOnMainThread(to: "Connected (Live)")
                 }
-                continue // Skip data parsing for this control frame
+                continue
             }
             
+            // 2. Route Meso Nose (BME688) Telemetry JSON
+            if line.isMesoNosePayload {
+                AppLogger.writeLog("Ingestion: Meso Nose payload received -> \(line)")
+                handleMesoNosePacket(line)
+                continue
+            }
+            
+            // 3. Fallback: Meso Pin (BMV080 Air Quality) Parsing
             let packet: IncomingPacket? = line.hasPrefix("{") ?
             IncomingPacket.decodeJSON(from: line) :
             IncomingPacket.decodeCommaSeparatedString(from: line)
@@ -280,10 +303,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             let captureTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
             let packetFootprint = "\(captureTimestamp)_\(validPacket.pm1)_\(validPacket.pm25)_\(validPacket.pm10)"
             
-            // Safe extraction without blocking the main queue loop
-            // Safe because the CoreBluetooth delegate queue is already the main thread
             let isDuplicate = self.databaseAlreadyContains(footprint: packetFootprint)
-            
             
             if isDuplicate {
                 AppLogger.writeLog("Ingestion: Redundant frame detected. Skipping duplicate.")
@@ -291,10 +311,8 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             }
             
             saveToSQLite(validPacket)
-            
             updateLiveState(with: validPacket)
             evaluateAirQualityThresholds(for: validPacket)
         }
     }
-    
 }

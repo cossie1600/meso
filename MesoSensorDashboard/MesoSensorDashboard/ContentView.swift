@@ -9,83 +9,225 @@ import SwiftUI
 import Combine
 import SwiftData
 
-
 struct ContentView: View {
     @Query(sort: \DB_PMSample.timestamp, order: .reverse) var allSamples: [DB_PMSample]
+    @EnvironmentObject var bleManager: BluetoothManager
     
     @State private var cleanPM1: Double = 0.0
     @State private var cleanPM25: Double = 0.0
     @State private var cleanPM10: Double = 0.0
-    @EnvironmentObject var bleManager: BluetoothManager
     
-    
-    var body: some View {
-        VStack {
-            if let alertText = bleManager.alertMessage {
-                HStack(spacing: 12) {
-                    Image(systemName: "info.circle.fill")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                    
-                    Text(alertText)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.white)
-                        .fixedSize(horizontal: false, vertical: true)
-                    
-                    Spacer()
-                }
-                .padding()
-                .background(bannerColor(for: bleManager.alertTheme))
-                .cornerRadius(12)
-                .padding([.horizontal, .top])
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-            
-            Spacer()
-            
-            HeroMetricBox(value: bleManager.pm25Value)
-                .padding(.bottom, 8)
-            
-            HStack(spacing: 16) {
-                SmallMetricCard(label: AppConfig.metricPMOne, value: bleManager.pm1Value)
-                SmallMetricCard(label: AppConfig.metricPMTen, value: bleManager.pm10Value)
-            }
-            
-            Spacer()
-            
-            //BatteryNote()
-            FacetedStatusLabel(text: bleManager.statusText)
-                .padding(.bottom, 12)
-        }
-        .padding(.horizontal)
-        .background(Color(.systemBackground))
-        .animation(.easeInOut, value: bleManager.alertMessage) // Animates banner entry smoothly
-        .onAppear {
-            updateUI()
-        }
-        .onChange(of: allSamples) { _, _ in
-            updateUI()
-        }
+    private var latestNoseSample: MesoNoseSample? {
+        bleManager.mesoNoseSamples.first
     }
     
-    // 3. This helper function bridges your view to your clean AirQualityMath file
+    private var latestBreathResult: PtcResult {
+        guard let sample = latestNoseSample else { return .none }
+        return PtcResult(rawValue: sample.ptcResult) ?? .none
+    }
+    
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                // 1. Meso Nose Controls & Telemetry
+                MesoNoseSectionView(
+                    sample: latestNoseSample,
+                    result: latestBreathResult
+                )
+                .padding(.top, 8)
+                
+                Divider()
+                    .padding(.vertical, 4)
+                
+                // 2. Meso Pin PM Metrics
+                MesoPinMetricsView(
+                    pm1: bleManager.pm1Value,
+                    pm25: bleManager.pm25Value,
+                    pm10: bleManager.pm10Value
+                )
+                
+                Spacer(minLength: 16)
+                
+                // 3. Alert Banner
+                if let alertText = bleManager.alertMessage {
+                    AlertBannerView(text: alertText, theme: bleManager.alertTheme)
+                }
+                
+                // 4. Status Footer
+                FacetedStatusLabel(text: bleManager.statusText)
+                    .padding(.bottom, 12)
+            }
+            .padding(.horizontal)
+        }
+        .background(Color(.systemBackground))
+        .animation(.easeInOut, value: bleManager.alertMessage)
+        .onAppear { updateUI() }
+        .onChange(of: allSamples) { _, _ in updateUI() }
+    }
+    
     private func updateUI() {
         let metrics = AirQualityMath.calculateCleanAverage(from: allSamples, pastHours: 1)
         self.cleanPM1 = metrics.pm1
         self.cleanPM25 = metrics.pm25
         self.cleanPM10 = metrics.pm10
     }
+}
+
+// MARK: - Subview 1: Meso Nose Section
+private struct MesoNoseSectionView: View {
+    let sample: MesoNoseSample?
+    let result: PtcResult
+    @EnvironmentObject var bleManager: BluetoothManager
     
-    private func bannerColor(for theme: AlertVisualTheme) -> Color {
-            switch theme {
-            case .fineParticulates:
-                return Color.blue
-            case .allergenProfile, .generalCoarse:
-                return Color.teal
-            case .none:
-                return Color.clear
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppConfig.DashboardUI.cardSpacing) {
+            HStack {
+                Label("Meso Nose Telemetry", systemImage: "wind")
+                    .font(.headline)
+                Spacer()
+                PtcBadgeView(result: result)
+            }
+            
+            if let nose = sample {
+                HStack(spacing: AppConfig.DashboardUI.metricGridSpacing) {
+                    MetricCell(label: "Temp", value: String(format: AppConfig.DashboardUI.Formats.temp, nose.temp))
+                    MetricCell(label: "Humidity", value: String(format: AppConfig.DashboardUI.Formats.humidity, nose.humidity))
+                    MetricCell(label: "VOC", value: String(format: AppConfig.DashboardUI.Formats.gasRes, nose.voc))
+                }
+                
+                if result.isEvaluated || nose.breathDropDelta > 0 {
+                    HStack {
+                        Text("Breath Drop Delta:")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                        Text(String(format: AppConfig.DashboardUI.Formats.deltaDrop, nose.breathDropDelta))
+                            .font(.footnote)
+                            .bold()
+                        Spacer()
+                        Text("Min VOC: \(String(format: AppConfig.DashboardUI.Formats.gasRes, nose.breathMin))")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.top, 4)
+                }
+            } else {
+                Text("No Meso Nose reading received yet...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+            }
+            
+            // Command Triggers Grid
+            VStack(spacing: 10) {
+                // 1. Main Operations Row
+                HStack(spacing: 10) {
+                    Button(action: { bleManager.startActiveSampling() }) {
+                        Label("Start Sampling", systemImage: "play.fill")
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.teal)
+                    
+                    Button(action: { bleManager.stopSampling() }) {
+                        Label("Stop Sampling", systemImage: "stop.fill")
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                }
+                
+                // 2. Mode Configurations Row
+                HStack(spacing: 8) {
+                    Button(action: { bleManager.setActiveSamplingMode() }) {
+                        Label("LP Mode (3s)", systemImage: "bolt.fill")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.teal)
+                    
+                    Button(action: { bleManager.setUltraLowSamplingMode() }) {
+                        Label("5m Sampling", systemImage: "leaf.fill")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.indigo)
+                }
+                
+                // 3. Breath Sequence Trigger (BOTTOM)
+                Button(action: { bleManager.triggerBreathTest() }) {
+                    Label("Breath Test", systemImage: "waveform.and.mic")
+                        .font(.footnote)
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+            }
+            .padding(.top, 6)
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(12)
+    }
+}
+
+// MARK: - Subview 2: Meso Pin Metrics Section
+private struct MesoPinMetricsView: View {
+    let pm1: String
+    let pm25: String
+    let pm10: String
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            HeroMetricBox(value: pm25)
+            
+            HStack(spacing: 16) {
+                SmallMetricCard(label: AppConfig.metricPMOne, value: pm1)
+                SmallMetricCard(label: AppConfig.metricPMTen, value: pm10)
             }
         }
+    }
+}
+
+// MARK: - Subview 3: Alert Banner
+private struct AlertBannerView: View {
+    let text: String
+    let theme: AlertVisualTheme
     
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "info.circle.fill")
+                .font(.title2)
+                .foregroundColor(.white)
+            
+            Text(text)
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .foregroundColor(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            
+            Spacer()
+        }
+        .padding()
+        .background(bannerColor(for: theme))
+        .cornerRadius(12)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+    
+    private func bannerColor(for theme: AlertVisualTheme) -> Color {
+        switch theme {
+        case .fineParticulates: return .blue
+        case .allergenProfile, .generalCoarse: return .teal
+        case .none: return .clear
+        }
+    }
 }

@@ -12,6 +12,10 @@
 		964399C83001EDB900C15547 /* AirQualityManagerProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 964399C73001EDB900C15547 /* AirQualityManagerProtocol.swift */; };
 		964399CA3001EF1000C15547 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 964399C93001EF1000C15547 /* AppConfig.swift */; };
 		964399F83003627C00C15547 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 964399F73003627C00C15547 /* AppLogger.swift */; };
+		96A057A93027C7DA0060EB70 /* MesoNoseSample.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96A057A83027C7CA0060EB70 /* MesoNoseSample.swift */; };
+		96A057AB3027C8290060EB70 /* StationaryDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96A057AA3027C8290060EB70 /* StationaryDetector.swift */; };
+		96A057AD3027C86C0060EB70 /* BluetoothManager+MesoNose.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96A057AC3027C86C0060EB70 /* BluetoothManager+MesoNose.swift */; };
+		96A057B33027C9B90060EB70 /* PtcResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96A057B23027C9B90060EB70 /* PtcResult.swift */; };
 		96B6F42E3006BCF400FB152D /* IncomingPacket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B6F42D3006BCF400FB152D /* IncomingPacket.swift */; };
 		96B6F4303006BD7400FB152D /* BluetoothManager+Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B6F42F3006BD7400FB152D /* BluetoothManager+Database.swift */; };
 		96B6F4323006CC0200FB152D /* BluetoothManager+Mock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B6F4313006CC0200FB152D /* BluetoothManager+Mock.swift */; };
@@ -28,6 +32,10 @@
 		964399C73001EDB900C15547 /* AirQualityManagerProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirQualityManagerProtocol.swift; sourceTree = "<group>"; };
 		964399C93001EF1000C15547 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		964399F73003627C00C15547 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
+		96A057A83027C7CA0060EB70 /* MesoNoseSample.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MesoNoseSample.swift; sourceTree = "<group>"; };
+		96A057AA3027C8290060EB70 /* StationaryDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StationaryDetector.swift; sourceTree = "<group>"; };
+		96A057AC3027C86C0060EB70 /* BluetoothManager+MesoNose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BluetoothManager+MesoNose.swift"; sourceTree = "<group>"; };
+		96A057B23027C9B90060EB70 /* PtcResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PtcResult.swift; sourceTree = "<group>"; };
 		96B6F42D3006BCF400FB152D /* IncomingPacket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IncomingPacket.swift; sourceTree = "<group>"; };
 		96B6F42F3006BD7400FB152D /* BluetoothManager+Database.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BluetoothManager+Database.swift"; sourceTree = "<group>"; };
 		96B6F4313006CC0200FB152D /* BluetoothManager+Mock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BluetoothManager+Mock.swift"; sourceTree = "<group>"; };
@@ -72,6 +80,10 @@
 		964399AA3001907000C15547 = {
 			isa = PBXGroup;
 			children = (
+				96A057B23027C9B90060EB70 /* PtcResult.swift */,
+				96A057A83027C7CA0060EB70 /* MesoNoseSample.swift */,
+				96A057AA3027C8290060EB70 /* StationaryDetector.swift */,
+				96A057AC3027C86C0060EB70 /* BluetoothManager+MesoNose.swift */,
 				96E6D27D300607250053122C /* DB_PMSample.swift */,
 				96E6D27B300606600053122C /* AirQualityMath.swift */,
 				964399F73003627C00C15547 /* AppLogger.swift */,
@@ -175,9 +187,13 @@
 				964399C2300191D400C15547 /* BluetoothManager.swift in Sources */,
 				96B6F42E3006BCF400FB152D /* IncomingPacket.swift in Sources */,
 				96B6F4303006BD7400FB152D /* BluetoothManager+Database.swift in Sources */,
+				96A057AD3027C86C0060EB70 /* BluetoothManager+MesoNose.swift in Sources */,
 				96B6F4363006D70E00FB152D /* BluetoothManager+UI.swift in Sources */,
 				964399C83001EDB900C15547 /* AirQualityManagerProtocol.swift in Sources */,
 				964399CA3001EF1000C15547 /* AppConfig.swift in Sources */,
+				96A057AB3027C8290060EB70 /* StationaryDetector.swift in Sources */,
+				96A057A93027C7DA0060EB70 /* MesoNoseSample.swift in Sources */,
+				96A057B33027C9B90060EB70 /* PtcResult.swift in Sources */,
 				96B6F4343006D6E300FB152D /* BluetoothManager+AirQuality.swift in Sources */,
 				96B6F4323006CC0200FB152D /* BluetoothManager+Mock.swift in Sources */,
 				96E6D27C300606600053122C /* AirQualityMath.swift in Sources */,

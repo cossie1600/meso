@@ -4,10 +4,11 @@
 //
 //  Created by Thomas Ai Mak on 7/10/26.
 //
+
 import SwiftUI
 import SwiftData
 
-struct HistoryView: View {
+struct AirQualityHistoryView: View {
     @ObservedObject var bleManager: BluetoothManager
     
     @Query(sort: \DB_PMSample.timestamp, order: .reverse)
@@ -22,7 +23,7 @@ struct HistoryView: View {
     
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
-            LazyVStack(spacing: 12) {
+            LazyVStack(spacing: AppConfig.DashboardUI.metricGridSpacing) {
                 // If there are no readings in the DB, show an empty state
                 if databaseHistory.isEmpty {
                     ContentUnavailableView(
@@ -32,7 +33,7 @@ struct HistoryView: View {
                     )
                     .padding(.top, 40)
                 } else {
-                    // 2. Use the first reading from our SwiftData query for the header date
+                    // Use the first reading from our SwiftData query for the header date
                     if let firstReading = databaseHistory.first {
                         HStack {
                             Text(dateFormatter.string(from: firstReading.timestamp).uppercased())
@@ -42,12 +43,13 @@ struct HistoryView: View {
                                 .foregroundStyle(.secondary.opacity(0.7))
                             Spacer()
                         }
-                        .padding(.bottom, 4)
+                        .padding(.bottom, AppConfig.DashboardUI.paddingVertical)
                     }
                     
-                    // 3. Loop through the real database items!
+                    // Loop through the real database items
                     ForEach(databaseHistory) { reading in
                         HistoryCardView(reading: reading)
+                            .padding(.vertical, AppConfig.DashboardUI.paddingVertical)
                     }
                 }
             }

@@ -190,12 +190,12 @@ void handleCommand(String command) {
     currentMode = MODE_DRY_AIR_DETECTION;
     sendBleMessage("{\"status\":\"DRY_AIR_STARTED\"}");
   }
-  else if (command == "set_desk_mode" || command == "set_ulp") {
+  else if (command == "set_ultra_low_sampling_mode" || command == "set_ulp") {
     setBsecProfile(PROFILE_ULP_300S);
     dryAirActive = true;
     currentMode = MODE_DRY_AIR_DETECTION;
   }
-  else if (command == "set_motion_active" || command == "set_lp") {
+  else if (command == "set_active_sampling_mode" || command == "set_lp") {
     setBsecProfile(PROFILE_LP_3S);
     dryAirActive = true;
     currentMode = MODE_DRY_AIR_DETECTION;
@@ -380,54 +380,6 @@ void loop() {
   vTaskDelay(pdMS_TO_TICKS(LOOP_TICK_DELAY_MS));
 }
 
-// bool wait10SecForBreathBlow() {
-//   if (!bsecReady) return false;
-
-//   float startHumidity = sensorData.currentHumidity;
-//   float startTemp     = sensorData.currentTemp;
-//   float startPressure = sensorData.currentPressure;
-//   float startGasRes   = sensorData.currentGasRes;
-
-//   sendBleMessage("{\"state\":\"READY_PLEASE_BLOW\"}");
-//   vTaskDelay(pdMS_TO_TICKS(300)); // Yield so BLE packet renders in LightBlue UI
-
-//   uint32_t startMs = millis();
-//   uint32_t lastStreamMs = millis();
-//   bool detected = false;
-
-//   while (millis() - startMs < BREATH_WAIT_TIMEOUT_MS) {
-//     bsec.run(); 
-
-//     float deltaHumidity = sensorData.currentHumidity - startHumidity;
-//     float deltaTemp     = sensorData.currentTemp - startTemp;
-//     float deltaPressure = sensorData.currentPressure - startPressure;
-    
-//     float gasDropPct = 0.0f;
-//     if (startGasRes > 0.0f && sensorData.currentGasRes > 0.0f) {
-//       gasDropPct = ((startGasRes - sensorData.currentGasRes) / startGasRes) * 100.0f;
-//     }
-
-//     if (millis() - lastStreamMs >= 1000UL) {
-//       lastStreamMs = millis();
-//       String debugMsg = "{\"dH\":" + String(deltaHumidity, 1) + 
-//                         ",\"dP\":" + String(deltaPressure, 2) + 
-//                         ",\"gDrop\":" + String(gasDropPct, 1) + "}";
-//       sendBleMessage(debugMsg);
-//     }
-
-//     if (deltaPressure >= 0.05f || 
-//         deltaHumidity >= 0.8f  || 
-//         deltaTemp     >= 0.1f  || 
-//         gasDropPct    >= 2.5f) {
-//       detected = true;
-//       break;
-//     }
-
-//     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
-//   }
-
-//   return detected;
-// }
 bool wait10SecForBreathBlow() {
   if (!bsecReady) return false;
 

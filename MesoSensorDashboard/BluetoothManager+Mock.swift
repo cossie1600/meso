@@ -9,14 +9,23 @@ import Foundation
 
 extension BluetoothManager {
     
+    func stopMockDataStream() {
+            mockDataTimer?.invalidate()
+            mockDataTimer = nil
+            AppLogger.writeLog("🧪 [Mock] Data stream stopped")
+        }
+    
     func startMockDataStream() {
         var timeTick = 0
         
         mockDataTimer?.invalidate()
         mockDataTimer = Timer.scheduledTimer(withTimeInterval: AppConfig.simulatorSpeedSec, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
             timeTick += 1
             
-            // 1. Generate base raw data points based on weather states
+            // ----------------------------------------------------------------
+            // 1. Meso Pin (BMV080) Particle Data Generation
+            // ----------------------------------------------------------------
             let pm1: Double
             let pm25: Double
             let pm10: Double
@@ -38,7 +47,7 @@ extension BluetoothManager {
                 pm10 = Double.random(in: 110.0...130.0)
             }
             
-            // 2. Route data execution layout depending on your AppConfig choice
+            // Route PM data execution layout depending on AppConfig choice
             var parsedPacket: IncomingPacket? = nil
             
             switch AppConfig.activeMockFormat {
@@ -61,14 +70,56 @@ extension BluetoothManager {
                 }
             }
             
-            // 3. Forward the dynamically verified packet down the operational pipeline
+            // Forward PM packet down operational pipeline
             if let packet = parsedPacket {
                 DispatchQueue.main.async {
-                    self?.saveToSQLite(packet)
-                    self?.updateLiveState(with: packet)
-                    self?.evaluateAirQualityThresholds(for: packet)
+                    self.saveToSQLite(packet)
+                    self.updateLiveState(with: packet)
+                    self.evaluateAirQualityThresholds(for: packet)
                 }
             }
+            
+            // ----------------------------------------------------------------
+            // 2. Meso Nose (BME688) Telemetry JSON Generation
+            // ----------------------------------------------------------------
+            let temp = Double.random(in: 21.5...26.5)
+            let humidity = Double.random(in: 40.0...65.0)
+            let pressure = Double.random(in: 1008.0...1018.0)
+            let baseGasRes = Int.random(in: 45000...120000)
+            
+            let mockAmbientJson = """
+            {"rt":\(String(format: "%.1f", temp)),"rh":\(String(format: "%.1f", humidity)),"press":\(String(format: "%.1f", pressure)),"voc":\(baseGasRes),"breath_drop_delta":0.0,"breath_min":0,"ptc_result":"NONE"}
+            """
+                        
+            self.handleMesoNosePacket(mockAmbientJson)
         }
     }
+    
+    func mockTriggerBreathTest() {
+            let temp = Double.random(in: 22.0...25.0)
+            let humidity = Double.random(in: 55.0...75.0)
+            let pressure = Double.random(in: 1010.0...1015.0)
+            let baseGasRes = Int.random(in: 60000...110000)
+            
+            let deltaDrop = Double.random(in: 10.0...65.0)
+            let minRes = Int(Double(baseGasRes) * (1.0 - (deltaDrop / 100.0)))
+            
+            let ptcResult: String
+            if deltaDrop < 15.0 {
+                ptcResult = "FRESH"
+            } else if deltaDrop < 35.0 {
+                ptcResult = "MILD"
+            } else if deltaDrop < 55.0 {
+                ptcResult = "SIGNIFICANT"
+            } else {
+                ptcResult = "SEVERE"
+            }
+            
+            let mockEvaluationJson = """
+            {"rt":\(String(format: "%.1f", temp)),"rh":\(String(format: "%.1f", humidity)),"press":\(String(format: "%.1f", pressure)),"voc":\(baseGasRes),"breath_drop_delta":\(String(format: "%.1f", deltaDrop)),"breath_min":\(minRes),"ptc_result":"\(ptcResult)"}
+            """
+            
+            AppLogger.writeLog("🧪 [Mock] Manual Breath Test Evaluation Triggered -> \(ptcResult) (\(String(format: "%.1f", deltaDrop))%)")
+            self.handleMesoNosePacket(mockEvaluationJson)
+        }
 }

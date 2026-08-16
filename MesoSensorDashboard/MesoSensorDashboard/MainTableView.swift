@@ -21,10 +21,16 @@ struct MainTabView: View {
             
             NavigationStack {
                 // Now passing the unified, shared environment manager instance safely
-                HistoryView(bleManager: bleManager)
+                AirQualityHistoryView(bleManager: bleManager)
             }
             .tabItem {
-                Label("Raw History", systemImage: "clock.arrow.circlepath")
+                Label("Air Quality History", systemImage: "clock.arrow.circlepath")
+            }
+            NavigationStack {
+                MesoNoseHistoryView(bleManager: bleManager)
+            }
+            .tabItem {
+                Label("VOC & Humidity History", systemImage: "clock.arrow.circlepath")
             }
         }
         .clingGemWatermark()

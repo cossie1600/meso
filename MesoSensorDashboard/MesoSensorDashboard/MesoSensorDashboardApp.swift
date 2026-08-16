@@ -22,10 +22,8 @@ struct MesoSensorDashboardApp: App {
             let mainContainer = try ModelContainer(for: DB_PMSample.self)
             self.container = mainContainer
             
-            // 3. Generate the active operational context
-            let context = ModelContext(mainContainer)
             
-            // 4. Inject the context right into the BluetoothManager initializer
+            // 3. Inject the context right into the BluetoothManager initializer
             // Swift requires backing properties (_bleManager) to be assigned manually inside an init block
             self._bleManager = StateObject(wrappedValue: BluetoothManager(modelContainer: mainContainer))
             
