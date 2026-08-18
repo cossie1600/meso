@@ -20,7 +20,7 @@ enum PtcResult: String, Codable {
         case .mild: return "Mild"
         case .significant: return "Significant"
         case .severe: return "Severe"
-        case .none: return "Slow Sampling"
+        case .none: return "Not Evaluated"
         }
     }
     

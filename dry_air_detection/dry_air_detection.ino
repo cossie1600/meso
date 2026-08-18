@@ -6,7 +6,7 @@
 #include "bsec2.h"
 
 // Set to false for battery production to disable USB CDC power drain
-#define ENABLE_SERIAL_LOGS false 
+#define ENABLE_SERIAL_LOGS true 
 
 #define I2C_SDA 6
 #define I2C_SCL 7
@@ -19,43 +19,39 @@ String Device_Name = "Meso Nose";
 // -------------------------------------------------------------------
 // Hardware, Serial & Clock Constants
 // -------------------------------------------------------------------
-constexpr uint32_t SERIAL_BAUD_RATE            = 115200; // Serial UART speed
-constexpr uint32_t I2C_CLOCK_SPEED_HZ          = 100000; // 100 kHz I2C Standard Mode
-constexpr float PRESSURE_HPA_DIVISOR           = 100.0f; // Pascal to Hectopascal conversion
-constexpr uint32_t CPU_LOW_POWER_FREQ_MHZ      = 80;     // Low power CPU scale rate
+constexpr uint32_t SERIAL_BAUD_RATE            = 115200; 
+constexpr uint32_t I2C_CLOCK_SPEED_HZ          = 100000; 
+constexpr float PRESSURE_HPA_DIVISOR           = 100.0f; 
+constexpr uint32_t CPU_LOW_POWER_FREQ_MHZ      = 80;     
 
-// -------------------------------------------------------------------
-// Hardware Initialization Delays (Millisecond Durations)
-// -------------------------------------------------------------------
+// Hardware Initialization Delays
 constexpr uint32_t SERIAL_INIT_DELAY_MS        = 500;   // Serial startup stabilization delay
 constexpr uint32_t BLE_POST_INIT_DELAY_MS      = 200;   // Delay after BLE stack launch
 constexpr uint32_t I2C_BUS_RESET_DELAY_MS      = 50;    // I2C bus end/reset pulse delay
 constexpr uint32_t I2C_BUS_SETTLE_DELAY_MS     = 100;   // I2C bus start/settle delay
 
 // -------------------------------------------------------------------
-// Operational Timing Constants (Millisecond Durations & BLE Intervals)
+// Operational Timing Constants (Millisecond Durations)
 // -------------------------------------------------------------------
 constexpr uint32_t NOTIFY_LP_INTERVAL_MS      = 3000;   // 3 seconds (LP mode)
 constexpr uint32_t NOTIFY_ULP_INTERVAL_MS     = 300000; // 5 minutes (ULP mode)
-constexpr uint32_t WARMUP_DELAY_MS            = 5000;   // 5 seconds sensor warmup
+constexpr uint32_t WARMUP_DELAY_MS            = 4000;   // 4 seconds sensor thermal stabilization
 constexpr uint32_t BREATH_WAIT_TIMEOUT_MS     = 10000;  // 10 seconds to wait for blow start
-constexpr uint32_t BREATH_SENSING_WINDOW_MS   = 12000;  // 12 seconds to capture minimum VOC
-constexpr uint32_t LOOP_TICK_DELAY_MS         = 20;     // Fast RTOS yield to keep BLE stack snappy
-constexpr uint32_t POLL_TICK_DELAY_MS         = 20;     // Fast polling RTOS yield
+constexpr uint32_t BREATH_SENSING_WINDOW_MS   = 3500;   // 3.5 seconds to capture minimum VOC nadir
+constexpr uint32_t LOOP_TICK_DELAY_MS         = 20;     
+constexpr uint32_t POLL_TICK_DELAY_MS         = 50;     
 
-// BLE Advertising Timing Units (0.625 ms per count)
-constexpr uint16_t BLE_ADV_MIN_INTERVAL       = 160;    // 100 ms (160 * 0.625ms)
-constexpr uint16_t BLE_ADV_MAX_INTERVAL       = 320;    // 200 ms (320 * 0.625ms)
+// BLE Advertising Timing Units
+constexpr uint16_t BLE_ADV_MIN_INTERVAL       = 160;    
+constexpr uint16_t BLE_ADV_MAX_INTERVAL       = 320;    
 
 // -------------------------------------------------------------------
 // Physical Thresholds & Clinical Evaluation Constants
 // -------------------------------------------------------------------
-constexpr float BREATH_FRESH_MAX_DROP_PCT       = 15.0f;  // < 15.0% = FRESH
-constexpr float BREATH_MILD_MAX_DROP_PCT        = 35.0f;  // 15.0% to 34.9% = MILD
-constexpr float BREATH_SIGNIFICANT_MAX_DROP_PCT = 55.0f;  // 35.0% to 54.9% = SIGNIFICANT
-                                                         // >= 55.0% = SEVERE
+constexpr float BREATH_FRESH_MAX_DROP_PCT       = 15.0f;  
+constexpr float BREATH_MILD_MAX_DROP_PCT        = 35.0f;  
+constexpr float BREATH_SIGNIFICANT_MAX_DROP_PCT = 55.0f;  
 
-// System Operational Modes
 enum OperationMode { MODE_IDLE, MODE_DRY_AIR_DETECTION, MODE_BREATH_TEST };
 enum BsecProfile { PROFILE_OFF, PROFILE_ULP_300S, PROFILE_LP_3S };
 
@@ -66,7 +62,7 @@ bool dryAirActive = false;
 bool deviceConnected = false;
 bool bsecReady = false;
 bool newGasDataAvailable = false;
-volatile bool pendingBreathCommand = false; // Flag to instantly break out of dry air mode
+volatile bool pendingBreathCommand = false; 
 
 struct SensorData {
   float currentTemp = 0.0f;
@@ -79,7 +75,7 @@ struct SensorData {
 
   String toJsonString() const {
     String json = "{";
-    json += "\"rt\":" + String(currentTemp, 1) + ",";
+    json += "\"temp\":" + String(currentTemp, 1) + ",";
     json += "\"rh\":" + String(currentHumidity, 1) + ",";
     json += "\"press\":" + String(currentPressure, 1) + ",";
     json += "\"voc\":" + String((long)currentGasRes) + ",";
@@ -105,8 +101,7 @@ Bsec2 bsec;
 NimBLEServer *pServer = NULL;
 NimBLECharacteristic *pCharacteristic = NULL;
 
-bool wait10SecForBreathBlow();
-float getBreathMinIndex(const float r_ambient);
+bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes);
 String eval_breath_result(float pctDrop);
 void setBsecProfile(BsecProfile profile);
 void runBreathSequence();
@@ -140,17 +135,14 @@ void setBsecProfile(BsecProfile profile) {
 
   if (profile == PROFILE_OFF) {
     bsec.updateSubscription(sensorList, numSensors, BSEC_SAMPLE_RATE_DISABLED);
-    logMessage("BSEC Profile: OFF");
     sendBleMessage("{\"state\":\"PROFILE_OFF\"}");
   } 
   else if (profile == PROFILE_ULP_300S) {
     bsec.updateSubscription(sensorList, numSensors, BSEC_SAMPLE_RATE_ULP);
-    logMessage("BSEC Profile: ULP (5-min)");
     sendBleMessage("{\"state\":\"PROFILE_ULP\"}");
   } 
   else if (profile == PROFILE_LP_3S) {
     bsec.updateSubscription(sensorList, numSensors, BSEC_SAMPLE_RATE_LP);
-    logMessage("BSEC Profile: LP (3-sec)");
     sendBleMessage("{\"state\":\"PROFILE_LP\"}");
   }
 }
@@ -236,10 +228,12 @@ class CharacteristicCallbacks: public NimBLECharacteristicCallbacks {
         rxValue.trim();
         rxValue.toLowerCase();
 
-        // Direct check for breath test trigger
+        logMessage("BLE Received Command: " + rxValue);
+
         if (rxValue == "3" || rxValue == "b" || rxValue == "breath" || rxValue.indexOf('b') != -1) {
-          dryAirActive = false;
-          pendingBreathCommand = true; // Interrupt loop on next pass
+          dryAirActive = false;               // Force ambient mode to stop
+          currentMode = MODE_BREATH_TEST;    // Lock mode immediately
+          pendingBreathCommand = true;       // Trigger sequence on next pass
         } else {
           handleCommand(rxValue);
         }
@@ -281,7 +275,7 @@ void initBLE() {
 }
 
 void setup() {
-  delay(2000); // Allow USB CDC / power rails to stabilize
+  delay(2000); 
 
 #if ENABLE_SERIAL_LOGS
   Serial.begin(SERIAL_BAUD_RATE);
@@ -315,29 +309,35 @@ void runBreathSequence() {
   currentMode = MODE_BREATH_TEST;
 
   sendBleMessage("{\"status\":\"BREATH_TEST_STARTED\"}");
-  sendBleMessage("{\"state\":\"WARMING_UP\",\"seconds\":5}");
+  sendBleMessage("{\"state\":\"WARMING_UP\",\"seconds\":4}");
   
   setBsecProfile(PROFILE_LP_3S);
 
-  // Warmup BSEC heater for 5 seconds
+  // Warmup BSEC heater for 4 seconds with RTOS yield
   uint32_t warmupStart = millis();
   while (millis() - warmupStart < WARMUP_DELAY_MS) {
     bsec.run();
-    vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 
-  // Run breath detection loop
-  bool userBreathTaken = wait10SecForBreathBlow();
+  float baseRes = 0.0f;
+  float minRes = 0.0f;
+  
+  bool userBreathTaken = waitAndCaptureBreath(baseRes, minRes);
 
   if (!userBreathTaken) {
     sendBleMessage("{\"state\":\"TIMEOUT\"}");
   } else {
-    float r_breath_min = getBreathMinIndex(sensorData.currentGasRes);
-    float deltaDrop = (1.0f - (r_breath_min / sensorData.currentGasRes)) * 100.0f; 
+    float deltaDrop = 0.0f;
+    if (baseRes > 0.0f) {
+      deltaDrop = ((baseRes - minRes) / baseRes) * 100.0f;
+      if (deltaDrop < 0.0f) deltaDrop = 0.0f;
+    }
 
     sensorData.deltaDrop = deltaDrop;
-    sensorData.rBreathMin = (long)r_breath_min;
+    sensorData.rBreathMin = (long)minRes;
     sensorData.ptcResult = eval_breath_result(deltaDrop);
+    
     sendBleMessage(sensorData.toJsonString());
   }
 
@@ -346,115 +346,107 @@ void runBreathSequence() {
 }
 
 void loop() {
-  // 1. Immediate priority check for incoming breath command
+  // Check breath trigger FIRST before touching BSEC
   if (pendingBreathCommand) {
     pendingBreathCommand = false;
     runBreathSequence();
     return;
   }
 
-  if (bsecReady) {
+  if (bsecReady && dryAirActive) {
     bsec.run();
 
-    if (currentMode == MODE_DRY_AIR_DETECTION && dryAirActive) {
-      static unsigned long lastNotifyTime = 0;
-      unsigned long notifyInterval = (currentProfile == PROFILE_LP_3S) ? NOTIFY_LP_INTERVAL_MS : NOTIFY_ULP_INTERVAL_MS;
+    static unsigned long lastNotifyTime = 0;
+    unsigned long notifyInterval = (currentProfile == PROFILE_LP_3S) ? NOTIFY_LP_INTERVAL_MS : NOTIFY_ULP_INTERVAL_MS;
 
-      if (millis() - lastNotifyTime >= notifyInterval) {
-        lastNotifyTime = millis();
-        sensorData.deltaDrop = 0.0f;
-        sensorData.rBreathMin = 0;
-        sensorData.ptcResult = "NONE";
+    if (millis() - lastNotifyTime >= notifyInterval) {
+      lastNotifyTime = millis();
+      sensorData.deltaDrop = 0.0f;
+      sensorData.rBreathMin = 0;
+      sensorData.ptcResult = "NONE";
 
-        sendBleMessage(sensorData.toJsonString());
-      }
-    } 
-  }
-  else {
-    if (currentMode != MODE_IDLE) {
-      sendBleMessage("{\"error\":\"HARDWARE_FAULT_BME688_NOT_FOUND\"}");
-      currentMode = MODE_IDLE;
+      sendBleMessage(sensorData.toJsonString());
     }
   }
 
   vTaskDelay(pdMS_TO_TICKS(LOOP_TICK_DELAY_MS));
 }
 
-bool wait10SecForBreathBlow() {
+bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes) {
   if (!bsecReady) return false;
 
-  // 1. Force a baseline snapshot
-  bsec.run();
+  // 1. Force BSEC execution until fresh sample updates sensorData
+  newGasDataAvailable = false;
+  uint32_t baselineTimeout = millis();
+  while (!newGasDataAvailable && (millis() - baselineTimeout < 3500UL)) {
+    bsec.run();
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+
+  // 2. Capture baseline snapshot AFTER fresh reading
   float baseHumidity = sensorData.currentHumidity;
-  float baseTemp     = sensorData.currentTemp;
-  float basePressure = sensorData.currentPressure;
   float baseGasRes   = sensorData.currentGasRes;
+  outBaselineRes     = baseGasRes;
 
   sendBleMessage("{\"state\":\"READY_PLEASE_BLOW\"}");
-  vTaskDelay(pdMS_TO_TICKS(300));
 
   uint32_t startMs = millis();
   uint32_t lastPrint = 0;
   bool detected = false;
 
-  // HARD 10-SECOND LOCK
-  while ((millis() - startMs) < 10000UL) {
-    bsec.run(); // Pump BSEC to trigger newDataCallback
+  newGasDataAvailable = false;
 
-    // Calculate deltas against initial snapshot
-    float deltaHumidity = fabs(sensorData.currentHumidity - baseHumidity);
-    float deltaTemp     = fabs(sensorData.currentTemp - baseTemp);
-    float deltaPressure = fabs(sensorData.currentPressure - basePressure);
-    
+  // 3. 10-Second Wait Window for Blow Start
+  while ((millis() - startMs) < BREATH_WAIT_TIMEOUT_MS) {
+    bsec.run();
+
+    float deltaHumidity = sensorData.currentHumidity - baseHumidity;
     float gasDropPct = 0.0f;
+    
     if (baseGasRes > 0.0f && sensorData.currentGasRes > 0.0f) {
       gasDropPct = ((baseGasRes - sensorData.currentGasRes) / baseGasRes) * 100.0f;
     }
 
-    // Stream status every 1 second
+    // Stream status update every 1 second
     if (millis() - lastPrint >= 1000UL) {
       lastPrint = millis();
       String debugMsg = "{\"dH\":" + String(deltaHumidity, 1) + 
-                        ",\"dP\":" + String(deltaPressure, 2) + 
                         ",\"gDrop\":" + String(gasDropPct, 1) + "}";
       sendBleMessage(debugMsg);
     }
 
-    // Trigger condition
-    if (deltaHumidity >= 0.2f || deltaPressure >= 0.01f || gasDropPct >= 0.5f) {
+    // Trigger condition: Human breath moisture spike (+0.3% RH) or Gas resistance drop (+0.8%)
+    if (deltaHumidity >= 0.3f || gasDropPct >= 0.8f) {
       detected = true;
+      outMinRes = sensorData.currentGasRes;
       break;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(20));
-  }
-
-  return detected;
-}
-
-float getBreathMinIndex(const float r_ambient) {
-  if (!bsecReady) return r_ambient;
-
-  sendBleMessage("{\"state\":\"TESTING_SENSING_BREATH\"}");
-
-  float r_breath_min = (r_ambient > 0.0f) ? r_ambient : sensorData.currentGasRes; 
-  uint32_t blowStart = millis();
-  newGasDataAvailable = false;
-
-  while (millis() - blowStart < BREATH_SENSING_WINDOW_MS) {
-    bsec.run();
-    
-    if (newGasDataAvailable) {
-      if (sensorData.currentGasRes > 0.0f && sensorData.currentGasRes < r_breath_min) {
-        r_breath_min = sensorData.currentGasRes; 
-      }
-      newGasDataAvailable = false;
-    }
-    
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
 
-  return r_breath_min;
+  if (!detected) {
+    return false;
+  }
+
+  // 4. Blow detected! Transition UI to processing and capture VOC nadir
+  sendBleMessage("{\"state\":\"TESTING_SENSING_BREATH\"}");
+
+  uint32_t blowWindowStart = millis();
+  newGasDataAvailable = false;
+
+  while (millis() - blowWindowStart < BREATH_SENSING_WINDOW_MS) {
+    bsec.run();
+    if (newGasDataAvailable) {
+      if (sensorData.currentGasRes > 0.0f && sensorData.currentGasRes < outMinRes) {
+        outMinRes = sensorData.currentGasRes; 
+      }
+      newGasDataAvailable = false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
+  }
+
+  return true;
 }
 
 String eval_breath_result(float pctDrop) {

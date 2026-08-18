@@ -29,7 +29,7 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                // 1. Meso Nose Controls & Telemetry
+                // 1. Meso Nose Controls & Telemetry (Includes Breath Test Overlay)
                 MesoNoseSectionView(
                     sample: latestNoseSample,
                     result: latestBreathResult
@@ -61,6 +61,7 @@ struct ContentView: View {
         }
         .background(Color(.systemBackground))
         .animation(.easeInOut, value: bleManager.alertMessage)
+        .animation(.easeInOut, value: bleManager.breathTestState)
         .onAppear { updateUI() }
         .onChange(of: allSamples) { _, _ in updateUI() }
     }
@@ -85,7 +86,34 @@ private struct MesoNoseSectionView: View {
                 Label("Meso Nose Telemetry", systemImage: "wind")
                     .font(.headline)
                 Spacer()
+                
+                // 🟢 Baseline Readiness Status Badge
+                if bleManager.isRoomBaselineReady {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                        Text("Baseline Ready")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .foregroundColor(.green)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.green.opacity(0.15))
+                    .cornerRadius(8)
+                }
+                
                 PtcBadgeView(result: result)
+            }
+            
+            // -------------------------------------------------------------
+            // BREATH TEST HUD OVERLAY (Renders when sequence is active)
+            // -------------------------------------------------------------
+            if bleManager.breathTestState != .idle {
+                BreathTestOverlayView(bleManager: bleManager)
+                    .transition(.scale.combined(with: .opacity))
+                    .padding(.vertical, 4)
             }
             
             if let nose = sample {
@@ -162,15 +190,17 @@ private struct MesoNoseSectionView: View {
                     .tint(.indigo)
                 }
                 
-                // 3. Breath Sequence Trigger (BOTTOM)
-                Button(action: { bleManager.triggerBreathTest() }) {
-                    Label("Breath Test", systemImage: "waveform.and.mic")
-                        .font(.footnote)
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
+                // 3. Breath Sequence Trigger (Only visible when state is idle)
+                if bleManager.breathTestState == .idle {
+                    Button(action: { bleManager.triggerBreathTest() }) {
+                        Label("Breath Test", systemImage: "waveform.and.mic")
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
             }
             .padding(.top, 6)
         }

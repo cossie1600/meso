@@ -10,6 +10,15 @@ import CoreBluetooth
 import Combine
 import SwiftData
 
+enum BreathTestState: Equatable {
+    case idle
+    case warmingUp
+    case blowNow
+    case processing
+    case completed
+    case timeout
+}
+
 enum ConnectionStrategy {
     case batterySaver // 15-minute intervals
     case emergency    // 1-minute tracking interval
@@ -24,6 +33,9 @@ enum AlertVisualTheme {
 
 class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDelegate, CBPeripheralDelegate {
     
+    @Published var breathTestState: BreathTestState = .idle
+    @Published var countdownSeconds: Int = 0
+    
     @Published var currentStrategy: ConnectionStrategy
     @Published var alertMessage: String? = nil
     @Published var alertTheme: AlertVisualTheme = .none
@@ -32,7 +44,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     @Published var connectedPeripherals: [UUID: CBPeripheral] = [:]
     @Published var writeCharacteristics: [UUID: CBCharacteristic] = [:]
     
-    // Legacy single-peripheral accessors for existing protocol extensions
+    // Legacy single-peripheral accessors
     var connectedPeripheral: CBPeripheral? {
         connectedPeripherals.values.first
     }
@@ -78,6 +90,14 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     
     // Per-device streaming chunk assembly buffers
     private var incomingBuffers: [UUID: String] = [:]
+    
+    // MARK: - Baseline Ready Evaluator
+    /// Returns true when the ambient MOX resistance has stabilized above 10,000 Ω and is in idle ambient mode
+    var isRoomBaselineReady: Bool {
+        guard breathTestState == .idle,
+              let latest = mesoNoseSamples.first else { return false }
+        return latest.voc > 10000 && latest.breathDropDelta == 0.0
+    }
     
     // MARK: - Initializer
     init(modelContainer: ModelContainer? = nil) {
@@ -163,14 +183,13 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
     }
     
-    /// Scans for all nearby BLE devices (withServices: nil) so firmware with non-advertised UUIDs is discovered.
     func startScanning() {
         guard centralManager?.state == .poweredOn else { return }
         
         AppLogger.writeLog("📡 Starting BLE peripheral scan for Meso Pin & Meso Nose...")
         centralManager?.scanForPeripherals(
-            withServices: nil, // Discover all devices; filter by name/UUID in didDiscover
-            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+            withServices: nil,
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
     }
     
@@ -181,14 +200,12 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         
         let deviceName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? "Unnamed Local Device"
         
-        // Match names defined in AppConfig
         let isMesoPin = deviceName.hasPrefix(AppConfig.bluetoothDeviceName)
         let isMesoNose = deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName)
         
         if isMesoPin || isMesoNose {
             let deviceID = peripheral.identifier
             
-            // Connect only if not already tracked
             if connectedPeripherals[deviceID] == nil {
                 AppLogger.writeLog("🎯 Target match found: \(deviceName) [ID: \(deviceID)] RSSI: \(RSSI)")
                 
@@ -212,7 +229,6 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         peripheral.delegate = self
         incomingBuffers[peripheral.identifier] = ""
         
-        // Discover services without filtering UUIDs upfront to guarantee discovery
         peripheral.discoverServices(nil)
         
         DispatchQueue.main.async {
@@ -220,7 +236,6 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             self.statusText = "Connected (\(count) Device\(count > 1 ? "s" : ""))"
         }
         
-        // Keep scanning so the second device can be discovered and connected
         startScanning()
     }
     
@@ -292,19 +307,41 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         
         guard let characteristics = service.characteristics else { return }
         
+        let targetNoseCharUUID = AppConfig.mesoNoseCharacteristicUUIDString.lowercased()
+        
         for characteristic in characteristics {
-            let canNotify = characteristic.properties.contains(.notify)
-            let canIndicate = characteristic.properties.contains(.indicate)
+            let uuidStr = characteristic.uuid.uuidString.lowercased()
+            let canNotify = characteristic.properties.contains(.notify) || characteristic.properties.contains(.indicate)
             let canWrite = characteristic.properties.contains(.write) || characteristic.properties.contains(.writeWithoutResponse)
             
+            // Prioritize UUID matching over arbitrary properties
             if canWrite {
-                self.writeCharacteristics[peripheral.identifier] = characteristic
-                AppLogger.writeLog("  -> Cached Write Characteristic [\(peripheral.name ?? "Device")]: \(characteristic.uuid.uuidString)")
+                if uuidStr == targetNoseCharUUID || writeCharacteristics[peripheral.identifier] == nil {
+                    self.writeCharacteristics[peripheral.identifier] = characteristic
+                    AppLogger.writeLog("  -> Cached Write Characteristic [\(peripheral.name ?? "Device")]: \(characteristic.uuid.uuidString)")
+                }
             }
             
-            if canNotify || canIndicate {
+            if canNotify {
                 AppLogger.writeLog("  -> Subscribing to Notification Stream [\(peripheral.name ?? "Device")]: \(characteristic.uuid.uuidString)")
                 peripheral.setNotifyValue(true, for: characteristic)
+            }
+        }
+    }
+    
+    /// Confirms notification state set before launching active commands
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        if let error = error {
+            AppLogger.writeLog("❌ Notification State Error [\(peripheral.name ?? "Device")]: \(error.localizedDescription)")
+            return
+        }
+        
+        AppLogger.writeLog("🔔 Notification state updated to \(characteristic.isNotifying) for \(peripheral.name ?? "Device")")
+        
+        if characteristic.isNotifying && peripheral.name?.hasPrefix(AppConfig.mesoNoseBluetoothName) == true {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                AppLogger.writeLog("🚀 Handshake Complete: Sending active sampling command to Meso Nose...")
+                self?.startActiveSampling()
             }
         }
     }
@@ -322,13 +359,16 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         let deviceID = peripheral.identifier
         incomingBuffers[deviceID, default: ""].append(chunk)
         
-        while let buffer = incomingBuffers[deviceID], let newLineIndex = buffer.firstIndex(of: "\n") {
-            let line = String(buffer[..<newLineIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-            incomingBuffers[deviceID]?.removeSubrange(..<buffer.index(after: newLineIndex))
+        guard var currentBuffer = incomingBuffers[deviceID], !currentBuffer.isEmpty else { return }
+        
+        // 1. Line-delimited parsing (\n)
+        while let newLineIndex = currentBuffer.firstIndex(of: "\n") {
+            let line = String(currentBuffer[..<newLineIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            currentBuffer.removeSubrange(..<currentBuffer.index(after: newLineIndex))
+            incomingBuffers[deviceID] = currentBuffer
             
             if line.isEmpty { continue }
             
-            // 1. Intercept Sync Token
             if line.contains("SYNC_COMPLETE") {
                 AppLogger.writeLog("Ingestion: Sync complete token received.")
                 DispatchQueue.main.async {
@@ -337,32 +377,53 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
                 continue
             }
             
-            // 2. Route Meso Nose (BME688) Telemetry JSON
             if line.isMesoNosePayload {
                 AppLogger.writeLog("Ingestion: Meso Nose payload -> \(line)")
                 handleMesoNosePacket(line)
                 continue
             }
             
-            // 3. Fallback: Meso Pin (BMV080 Air Quality) Parsing
-            let packet: IncomingPacket? = line.hasPrefix("{") ?
-            IncomingPacket.decodeJSON(from: line) :
-            IncomingPacket.decodeCommaSeparatedString(from: line)
-            
-            guard let validPacket = packet else {
-                updateStatusOnMainThread(to: "Connected (Bad Packet)")
-                continue
-            }
-            
-            let captureTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
-            let packetFootprint = "\(captureTimestamp)_\(validPacket.pm1)_\(validPacket.pm25)_\(validPacket.pm10)"
-            
-            let isDuplicate = self.databaseAlreadyContains(footprint: packetFootprint)
-            if isDuplicate { continue }
-            
-            saveToSQLite(validPacket)
-            updateLiveState(with: validPacket)
-            evaluateAirQualityThresholds(for: validPacket)
+            parseMesoPinPacket(line)
         }
+        
+        // 2. Continuous JSON Object Extraction (Handles missing \n or MTU chunking)
+        if currentBuffer.contains("{") && currentBuffer.contains("}") {
+            if let startIdx = currentBuffer.firstIndex(of: "{"),
+               let endIdx = currentBuffer.lastIndex(of: "}") {
+                
+                if startIdx < endIdx {
+                    let jsonCandidate = String(currentBuffer[startIdx...endIdx])
+                    
+                    if jsonCandidate.isMesoNosePayload {
+                        AppLogger.writeLog("Ingestion (Extracted JSON): Meso Nose -> \(jsonCandidate)")
+                        handleMesoNosePacket(jsonCandidate)
+                        
+                        // Drop extracted portion from buffer
+                        let nextIndex = currentBuffer.index(after: endIdx)
+                        incomingBuffers[deviceID] = (nextIndex < currentBuffer.endIndex) ? String(currentBuffer[nextIndex...]) : ""
+                    }
+                }
+            }
+        }
+    }
+    
+    private func parseMesoPinPacket(_ line: String) {
+        let packet: IncomingPacket? = line.hasPrefix("{") ?
+        IncomingPacket.decodeJSON(from: line) :
+        IncomingPacket.decodeCommaSeparatedString(from: line)
+        
+        guard let validPacket = packet else {
+            updateStatusOnMainThread(to: "Connected (Bad Packet)")
+            return
+        }
+        
+        let captureTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        let packetFootprint = "\(captureTimestamp)_\(validPacket.pm1)_\(validPacket.pm25)_\(validPacket.pm10)"
+        
+        if self.databaseAlreadyContains(footprint: packetFootprint) { return }
+        
+        saveToSQLite(validPacket)
+        updateLiveState(with: validPacket)
+        evaluateAirQualityThresholds(for: validPacket)
     }
 }

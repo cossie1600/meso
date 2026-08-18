@@ -82,44 +82,49 @@ extension BluetoothManager {
             // ----------------------------------------------------------------
             // 2. Meso Nose (BME688) Telemetry JSON Generation
             // ----------------------------------------------------------------
+            // 🛑 GUARD: Do not inject background ambient mock packets while a
+            // breath test sequence (warmup, blow now, or completed HUD) is active!
+            guard self.breathTestState == .idle else { return }
+            
             let temp = Double.random(in: 21.5...26.5)
             let humidity = Double.random(in: 40.0...65.0)
             let pressure = Double.random(in: 1008.0...1018.0)
             let baseGasRes = Int.random(in: 45000...120000)
             
+            // Updated "temp" key so it matches standard MesoNoseSample decoding
             let mockAmbientJson = """
-            {"rt":\(String(format: "%.1f", temp)),"rh":\(String(format: "%.1f", humidity)),"press":\(String(format: "%.1f", pressure)),"voc":\(baseGasRes),"breath_drop_delta":0.0,"breath_min":0,"ptc_result":"NONE"}
+            {"temp":\(String(format: "%.1f", temp)),"rh":\(String(format: "%.1f", humidity)),"press":\(String(format: "%.1f", pressure)),"voc":\(baseGasRes)}
             """
-                        
-            self.handleMesoNosePacket(mockAmbientJson)
+
+            if self.breathTestState == .idle {
+                self.handleMesoNosePacket(mockAmbientJson)
+            }
         }
     }
     
+    func handleMockPacket(_ text: String) {
+        // Skip injecting background mock samples if user is actively doing a breath test
+        guard breathTestState == .idle else { return }
+        
+        handleMesoNosePacket(text)
+    }
+    
     func mockTriggerBreathTest() {
-            let temp = Double.random(in: 22.0...25.0)
-            let humidity = Double.random(in: 55.0...75.0)
-            let pressure = Double.random(in: 1010.0...1015.0)
-            let baseGasRes = Int.random(in: 60000...110000)
+        AppLogger.writeLog("🧪 [Mock] Starting Breath Sequence Simulation...")
+        
+        // 1. Kick off warmup phase
+        handleMesoNosePacket("{\"status\":\"BREATH_TEST_STARTED\"}")
+        handleMesoNosePacket("{\"state\":\"WARMING_UP\",\"seconds\":5}")
+        
+        // 2. Wait 8 seconds (5s warmup + 3s blowing phase), then inject the breath result
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in
+            guard let self = self, self.breathTestState == .blowNow else { return }
             
-            let deltaDrop = Double.random(in: 10.0...65.0)
-            let minRes = Int(Double(baseGasRes) * (1.0 - (deltaDrop / 100.0)))
-            
-            let ptcResult: String
-            if deltaDrop < 15.0 {
-                ptcResult = "FRESH"
-            } else if deltaDrop < 35.0 {
-                ptcResult = "MILD"
-            } else if deltaDrop < 55.0 {
-                ptcResult = "SIGNIFICANT"
-            } else {
-                ptcResult = "SEVERE"
-            }
-            
-            let mockEvaluationJson = """
-            {"rt":\(String(format: "%.1f", temp)),"rh":\(String(format: "%.1f", humidity)),"press":\(String(format: "%.1f", pressure)),"voc":\(baseGasRes),"breath_drop_delta":\(String(format: "%.1f", deltaDrop)),"breath_min":\(minRes),"ptc_result":"\(ptcResult)"}
+            AppLogger.writeLog("🧪 [Mock] Simulating Breath Sample Receipt...")
+            let mockBreathPayload = """
+            {"temp":28.5,"rh":55.0,"press":1013.2,"voc":15200,"breath_drop_delta":42.5,"breath_min":8740,"ptc_result":"PTC_POSITIVE"}
             """
-            
-            AppLogger.writeLog("🧪 [Mock] Manual Breath Test Evaluation Triggered -> \(ptcResult) (\(String(format: "%.1f", deltaDrop))%)")
-            self.handleMesoNosePacket(mockEvaluationJson)
+            self.handleMesoNosePacket(mockBreathPayload)
         }
+    }
 }
