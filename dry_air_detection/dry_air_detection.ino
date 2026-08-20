@@ -35,7 +35,8 @@ constexpr uint32_t I2C_BUS_SETTLE_DELAY_MS     = 100;   // I2C bus start/settle 
 // -------------------------------------------------------------------
 constexpr uint32_t NOTIFY_LP_INTERVAL_MS      = 3000;   // 3 seconds (LP mode)
 constexpr uint32_t NOTIFY_ULP_INTERVAL_MS     = 300000; // 5 minutes (ULP mode)
-constexpr uint32_t WARMUP_DELAY_MS            = 4000;   // 4 seconds sensor thermal stabilization
+constexpr uint32_t WARMUP_SHORT_DELAY_MS      = 4000;   // 4 seconds sensor thermal stabilization
+constexpr uint32_t WARMUP_LONG_DELAY_MS       = 15000;  // 15 seconds sensor thermal stabilization
 constexpr uint32_t BREATH_WAIT_TIMEOUT_MS     = 10000;  // 10 seconds to wait for blow start
 constexpr uint32_t BREATH_SENSING_WINDOW_MS   = 3500;   // 3.5 seconds to capture minimum VOC nadir
 constexpr uint32_t LOOP_TICK_DELAY_MS         = 20;     
@@ -91,6 +92,8 @@ SensorData sensorData;
 
 bsecSensor sensorList[] = {
   BSEC_OUTPUT_RAW_GAS,
+  BSEC_OUTPUT_RAW_TEMPERATURE,
+  BSEC_OUTPUT_RAW_HUMIDITY,
   BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
   BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
   BSEC_OUTPUT_RAW_PRESSURE
@@ -154,10 +157,20 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
     const bsecData output = outputs.output[i];
     switch (output.sensor_id) {
       case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE:
-        sensorData.currentTemp = output.signal;        
+        if (output.signal > -40.0f && output.signal < 85.0f && output.signal != 0.0f) {
+          sensorData.currentTemp = output.signal;
+        }
+        break;
+      case BSEC_OUTPUT_RAW_TEMPERATURE:
+        if (output.signal == 0.0f) {
+          sensorData.currentHumidity = output.signal;
+        }
         break;
       case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:
         sensorData.currentHumidity = output.signal;        
+        break;
+      case BSEC_OUTPUT_RAW_HUMIDITY:
+        if (sensorData.currentHumidity == 0.0f) sensorData.currentHumidity = output.signal;
         break;
       case BSEC_OUTPUT_RAW_PRESSURE:
         sensorData.currentPressure = output.signal / PRESSURE_HPA_DIVISOR;
@@ -295,6 +308,7 @@ void setup() {
 
   if (bsec.begin(sensorAddr, Wire)) {
     bsec.attachCallback(newDataCallback);
+    bsec.setTemperatureOffset(0.0f);
     setBsecProfile(PROFILE_ULP_300S);
     bsecReady = true;
   } else {
@@ -308,14 +322,16 @@ void runBreathSequence() {
   dryAirActive = false;
   currentMode = MODE_BREATH_TEST;
 
-  sendBleMessage("{\"status\":\"BREATH_TEST_STARTED\"}");
-  sendBleMessage("{\"state\":\"WARMING_UP\",\"seconds\":4}");
-  
+  // Warmup BSEC heater for 4 seconds with RTOS yield if profile is 3s, 
+  // 15 seconds if profile is 30
+  uint32_t warmTime = (currentProfile == PROFILE_LP_3S) ? WARMUP_SHORT_DELAY_MS : WARMUP_LONG_DELAY_MS;
   setBsecProfile(PROFILE_LP_3S);
 
-  // Warmup BSEC heater for 4 seconds with RTOS yield
+  sendBleMessage("{\"status\":\"BREATH_TEST_STARTED\"}");
+  sendBleMessage("{\"state\":\"WARMING_UP\",\"seconds\":" + String(warmTime / 1000) + "}");
+    
   uint32_t warmupStart = millis();
-  while (millis() - warmupStart < WARMUP_DELAY_MS) {
+  while (millis() - warmupStart < warmTime) {
     bsec.run();
     vTaskDelay(pdMS_TO_TICKS(100));
   }
@@ -342,7 +358,7 @@ void runBreathSequence() {
   }
 
   setBsecProfile(PROFILE_ULP_300S);
-  currentMode = MODE_IDLE;
+  currentMode = MODE_DRY_AIR_DETECTION;
 }
 
 void loop() {

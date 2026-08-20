@@ -11,19 +11,35 @@ import SwiftData
 
 struct ContentView: View {
     @Query(sort: \DB_PMSample.timestamp, order: .reverse) var allSamples: [DB_PMSample]
+    @Query(sort: \DB_MesoNoseSample.timestamp, order: .reverse) var allNoseDbSamples: [DB_MesoNoseSample]
     @EnvironmentObject var bleManager: BluetoothManager
     
     @State private var cleanPM1: Double = 0.0
     @State private var cleanPM25: Double = 0.0
     @State private var cleanPM10: Double = 0.0
     
+    /// The latest telemetry sample (ambient or evaluated)
     private var latestNoseSample: MesoNoseSample? {
         bleManager.mesoNoseSamples.first
     }
     
+    /// Finds the most recent completed breath test evaluation result
     private var latestBreathResult: PtcResult {
-        guard let sample = latestNoseSample else { return .none }
-        return PtcResult(rawValue: sample.ptcResult) ?? .none
+        // 1. Search in-memory array for the newest sample with an active evaluation result
+        if let evaluatedSample = bleManager.mesoNoseSamples.first(where: {
+            $0.ptcResult != "NONE" && !$0.ptcResult.isEmpty
+        }) {
+            return PtcResult(rawValue: evaluatedSample.ptcResult) ?? .none
+        }
+        
+        // 2. Fallback to persisted database records if in-memory list is fresh/empty
+        if let dbEvaluated = allNoseDbSamples.first(where: {
+            $0.ptcResult != "NONE" && !$0.ptcResult.isEmpty
+        }) {
+            return PtcResult(rawValue: dbEvaluated.ptcResult) ?? .none
+        }
+        
+        return .none
     }
     
     var body: some View {

@@ -91,9 +91,9 @@ struct MesoSensorDashboardApp: App {
             )
             
             try context.save()
-            AppLogger.writeLog("🧹 Database cleanup complete. Pruned PM & Meso Nose records older than \(AppConfig.databaseRetentionDays) days.")
+            AppLogger.writeLog("Database cleanup complete. Pruned PM & Meso Nose records older than \(AppConfig.databaseRetentionDays) days.")
         } catch {
-            AppLogger.writeLog("❌ Failed to auto-prune database: \(error.localizedDescription)")
+            AppLogger.writeLog("Failed to auto-prune database: \(error.localizedDescription)")
         }
     }
 }

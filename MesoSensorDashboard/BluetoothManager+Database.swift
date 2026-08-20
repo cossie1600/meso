@@ -4,6 +4,7 @@
 //
 //  Created by Thomas Ai Mak on 7/14/26.
 //
+
 import Foundation
 import SwiftData
 
@@ -43,30 +44,58 @@ extension BluetoothManager {
         }
     }
     
+    /// Saves a standard PM sensor packet to SQLite via SwiftData
+    @MainActor
     func saveToSQLite(_ packet: IncomingPacket) {
         guard let container = self.modelContainer else {
             AppLogger.writeLog("Error: ModelContainer not injected into BluetoothManager.")
             return
         }
         
-        DispatchQueue.main.async {
-            let context = ModelContext(container)
-            let newSample = DB_PMSample(
-                timestamp: Date(),
-                pm1: packet.pm1,
-                pm25: packet.pm25,
-                pm10: packet.pm10
-            )
-            
-            context.insert(newSample)
-            
-            do {
-                try context.save()
-                AppLogger.writeLog("💾 Successfully saved sample to Main Database Context! (PM2.5: \(packet.pm25))")
-            } catch {
-                AppLogger.writeLog("❌ Failed to save context: \(error)")
-            }
+        let context = container.mainContext
+        let newSample = DB_PMSample(
+            timestamp: Date(),
+            pm1: packet.pm1,
+            pm25: packet.pm25,
+            pm10: packet.pm10
+        )
+        
+        context.insert(newSample)
+        
+        do {
+            try context.save()
+            AppLogger.writeLog("Successfully saved PM sample to Main Context! (PM2.5: \(packet.pm25))")
+        } catch {
+            AppLogger.writeLog("Failed to save PM context: \(error)")
+        }
+    }
+    
+    /// Saves a Meso Nose sensor sample to SQLite via SwiftData
+    @MainActor
+    func saveMesoNoseToDatabase(_ sample: MesoNoseSample) {
+        guard let container = self.modelContainer else {
+            AppLogger.writeLog("Error: ModelContainer not injected into BluetoothManager for Meso Nose save.")
+            return
+        }
+        
+        let context = container.mainContext
+        let dbRecord = DB_MesoNoseSample(
+            timestamp: Date(),
+            temp: sample.temp,
+            humidity: sample.humidity,
+            voc: sample.voc,
+            breathDropDelta: sample.breathDropDelta,
+            breathMin: sample.breathMin,
+            ptcResult: sample.ptcResult
+        )
+        
+        context.insert(dbRecord)
+        
+        do {
+            try context.save()
+            AppLogger.writeLog("✅ Successfully saved Meso Nose sample to disk [VOC: \(sample.voc), PTC: \(sample.ptcResult)]")
+        } catch {
+            AppLogger.writeLog("❌ SwiftData Meso Nose Save Error: \(error.localizedDescription)")
         }
     }
 }
-

@@ -26,15 +26,14 @@ struct AppLogger {
     }
     
     static func writeLog(_ message: String) {
-        print("📝 [Log] \(message)")
+        print("[Log] \(message)")
         guard AppConfig.isLoggingEnabled else { return }
         guard let url = logFileURL else { return }
         
-        // 🧼 AUTO-PRUNE: Reads directly from AppConfig now!
         if let fileAttributes = try? FileManager.default.attributesOfItem(atPath: url.path),
            let fileSize = fileAttributes[.size] as? Int64 {
             if fileSize > AppConfig.maxLogSizeInBytes {
-                print("🧹 [Logger] Log file exceeded limit. Rotating and clearing slate...")
+                print("[Logger] Log file exceeded limit. Rotating and clearing slate...")
                 try? FileManager.default.removeItem(at: url)
             }
         }

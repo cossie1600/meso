@@ -88,73 +88,74 @@ extension BluetoothManager {
     }
 
     func handleMesoNosePacket(_ text: String) {
-        guard let data = text.data(using: .utf8),
-              let jsonObj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+            guard let data = text.data(using: .utf8),
+                  let jsonObj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
             
-            // 1. Intercept Status Tokens
-            if let status = jsonObj["status"] as? String, status == "BREATH_TEST_STARTED" {
-                self.startCountdownTimer(from: 4)
-                return
-            }
-            
-            // 2. Intercept Firmware State Transitions
-            if let state = jsonObj["state"] as? String {
-                switch state {
-                case "WARMING_UP":
-                    let seconds = jsonObj["seconds"] as? Int ?? 4
-                    self.startCountdownTimer(from: seconds)
-                    return
-                    
-                case "READY_PLEASE_BLOW":
-                    self.mockDataTimer?.invalidate()
-                    self.breathTestState = .blowNow
-                    self.statusText = "BLOW NOW"
-                    return
-
-                case "TESTING_SENSING_BREATH":
-                    // FIX: Immediately update UI from BLOW NOW to processing when blow is detected
-                    self.mockDataTimer?.invalidate()
-                    self.breathTestState = .processing
-                    self.statusText = "Analyzing breath sample..."
-                    return
-                    
-                case "TIMEOUT":
-                    self.mockDataTimer?.invalidate()
-                    self.breathTestState = .timeout
-                    self.statusText = "No Breath Detected"
-                    return
-                    
-                default:
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                
+                // 1. Intercept Status Tokens
+                if let status = jsonObj[MesoNoseKeys.status] as? String, status == "BREATH_TEST_STARTED" {
+                    self.startCountdownTimer(from: 4)
                     return
                 }
-            }
-            
-            // 3. Ignore 1-second debug streaming packets (dH, gDrop)
-            if jsonObj["dH"] != nil || jsonObj["gDrop"] != nil {
-                return
-            }
-            
-            // 4. Process Final Evaluation Result Payload
-            if let sample = MesoNoseSample(jsonString: text) {
+                
+                // 2. Intercept Firmware State Transitions
+                if let state = jsonObj[MesoNoseKeys.state] as? String {
+                    switch state {
+                    case "WARMING_UP":
+                        let seconds = jsonObj["seconds"] as? Int ?? 4
+                        self.startCountdownTimer(from: seconds)
+                        return
+                        
+                    case "READY_PLEASE_BLOW":
+                        self.mockDataTimer?.invalidate()
+                        self.breathTestState = .blowNow
+                        self.statusText = "BLOW NOW"
+                        return
+
+                    case "TESTING_SENSING_BREATH":
+                        self.mockDataTimer?.invalidate()
+                        self.breathTestState = .processing
+                        self.statusText = "Analyzing breath sample..."
+                        return
+                        
+                    case "TIMEOUT":
+                        self.mockDataTimer?.invalidate()
+                        self.breathTestState = .timeout
+                        self.statusText = "No Breath Detected"
+                        return
+                        
+                    default:
+                        break
+                    }
+                }
+                
+                // 3. Attempt parsing the payload into a MesoNoseSample
+                guard let sample = MesoNoseSample(jsonString: text) else {
+                    if jsonObj["dH"] == nil && jsonObj["gDrop"] == nil {
+                        AppLogger.writeLog("⚠️ Failed to parse MesoNoseSample from JSON payload: \(text)")
+                    }
+                    return
+                }
+                
+                // 4. Check if this is a completed breath test evaluation result
                 let isFinalResult = sample.breathDropDelta > 0.0 || (sample.ptcResult != "NONE" && !sample.ptcResult.isEmpty)
                 
                 if isFinalResult {
                     self.mockDataTimer?.invalidate()
                     self.breathTestState = .completed
                     self.statusText = "Analysis Complete"
-                }
-                
-                self.mesoNoseSamples.insert(sample, at: 0)
-                
-                if let context = self.modelContainer?.mainContext {
-                    self.saveMesoNoseToDatabase(sample, context: context)
+                    
+                    // Prepend to array so SwiftUI views observing mesoNoseSamples.first pick up the completed result immediately
+                    self.mesoNoseSamples.insert(sample, at: 0)
+                    self.saveMesoNoseToDatabase(sample)
+                } else if self.breathTestState == .idle {
+                    // Only overwrite telemetry array for routine background ambient samples if no active completion state is showing
+                    self.mesoNoseSamples.insert(sample, at: 0)
                 }
             }
         }
-    }
 
     private func startCountdownTimer(from seconds: Int) {
         self.mockDataTimer?.invalidate()
@@ -180,44 +181,16 @@ extension BluetoothManager {
             }
         }
     }
-        
-    /// Inserts and saves the Meso Nose sample into SwiftData
-    func saveMesoNoseToDatabase(_ sample: MesoNoseSample, context: ModelContext) {
-        let dbRecord = DB_MesoNoseSample(
-            timestamp: Date(),
-            temp: sample.temp,
-            humidity: sample.humidity,
-            voc: sample.voc,
-            breathDropDelta: sample.breathDropDelta,
-            breathMin: sample.breathMin,
-            ptcResult: sample.ptcResult
-        )
-        
-        context.insert(dbRecord)
-        
-        do {
-            try context.save()
-            AppLogger.writeLog("Saved Meso Nose sample [VOC: \(sample.voc), PTC: \(sample.ptcResult)]")
-        } catch {
-            AppLogger.writeLog("SwiftData Save Error: \(error.localizedDescription)")
-        }
-    }
 }
 
 extension String {
     /// Inspects the raw text string to identify if it originates from the Meso Nose (BME688) firmware
     var isMesoNosePayload: Bool {
         let trimmed = self.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{") && trimmed.hasSuffix("}") else { return false }
         
-        return trimmed.contains("{") && trimmed.contains("}") && (
-            trimmed.contains("\"voc\"") ||
-            trimmed.contains("\"temp\"") ||
-            trimmed.contains("\"rt\"") ||
-            trimmed.contains("\"rh\"") ||
-            trimmed.contains("\"ptc_result\"") ||
-            trimmed.contains("\"rx_cmd\"") ||
-            trimmed.contains("\"status\"") ||
-            trimmed.contains("\"state\"")
-        )
+        return MesoNoseKeys.allKeys.contains { key in
+            trimmed.contains("\"\(key)\"")
+        }
     }
 }
