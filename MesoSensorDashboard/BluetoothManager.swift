@@ -35,7 +35,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     
     @Published var breathTestState: BreathTestState = .idle
     @Published var countdownSeconds: Int = 0
-    
+    @Published var lastSentCommand: AppConfig.MesoNoseCommand?
     @Published var currentStrategy: ConnectionStrategy
     @Published var alertMessage: String? = nil
     @Published var alertTheme: AlertVisualTheme = .none

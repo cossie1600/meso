@@ -57,6 +57,9 @@ struct AppConfig {
     static let coarseParticleAlertThreshold: Double = 0.70
     static let ultraFineParticleAlertThreshold: Double = 5.0
     
+    /// Threshold interval in seconds for Ultra Low Power sampling mode (5 minutes)
+    static let ultraLowSamplingIntervalThreshold: TimeInterval = 300.0
+    
     // 🎨 Shared Dashboard UI Tokens & Formatting
     enum DashboardUI {
         // Layout Spacing & Radius

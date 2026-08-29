@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var cleanPM1: Double = 0.0
     @State private var cleanPM25: Double = 0.0
     @State private var cleanPM10: Double = 0.0
+    @State private var isShowingSettings = false
     
     /// The latest telemetry sample (ambient or evaluated)
     private var latestNoseSample: MesoNoseSample? {
@@ -43,43 +44,60 @@ struct ContentView: View {
     }
     
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                // 1. Meso Nose Controls & Telemetry (Includes Breath Test Overlay)
-                MesoNoseSectionView(
-                    sample: latestNoseSample,
-                    result: latestBreathResult
-                )
-                .padding(.top, 8)
-                
-                Divider()
-                    .padding(.vertical, 4)
-                
-                // 2. Meso Pin PM Metrics
-                MesoPinMetricsView(
-                    pm1: bleManager.pm1Value,
-                    pm25: bleManager.pm25Value,
-                    pm10: bleManager.pm10Value
-                )
-                
-                Spacer(minLength: 16)
-                
-                // 3. Alert Banner
-                if let alertText = bleManager.alertMessage {
-                    AlertBannerView(text: alertText, theme: bleManager.alertTheme)
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    // 1. Meso Nose Controls & Telemetry (Includes Breath Test Overlay)
+                    MesoNoseSectionView(
+                        sample: latestNoseSample,
+                        result: latestBreathResult
+                    )
+                    .padding(.top, 8)
+                    
+                    Divider()
+                        .padding(.vertical, 4)
+                    
+                    // 2. Meso Pin PM Metrics
+                    MesoPinMetricsView(
+                        pm1: bleManager.pm1Value,
+                        pm25: bleManager.pm25Value,
+                        pm10: bleManager.pm10Value
+                    )
+                    
+                    Spacer(minLength: 16)
+                    
+                    // 3. Alert Banner
+                    if let alertText = bleManager.alertMessage {
+                        AlertBannerView(text: alertText, theme: bleManager.alertTheme)
+                    }
+                    
+                    // 4. Status Footer
+                    FacetedStatusLabel(text: bleManager.statusText)
+                        .padding(.bottom, 12)
                 }
-                
-                // 4. Status Footer
-                FacetedStatusLabel(text: bleManager.statusText)
-                    .padding(.bottom, 12)
+                .padding(.horizontal)
             }
-            .padding(.horizontal)
+            .navigationTitle("Meso Dashboard")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { isShowingSettings = true }) {
+                        Image(systemName: "gearshape.fill")
+                            .imageScale(.large)
+                    }
+                }
+            }
+            .sheet(isPresented: $isShowingSettings) {
+                NavigationStack {
+                    SettingsView()
+                        .environmentObject(bleManager)
+                }
+            }
+            .background(Color(.systemBackground))
+            .animation(.easeInOut, value: bleManager.alertMessage)
+            .animation(.easeInOut, value: bleManager.breathTestState)
+            .onAppear { updateUI() }
+            .onChange(of: allSamples) { _, _ in updateUI() }
         }
-        .background(Color(.systemBackground))
-        .animation(.easeInOut, value: bleManager.alertMessage)
-        .animation(.easeInOut, value: bleManager.breathTestState)
-        .onAppear { updateUI() }
-        .onChange(of: allSamples) { _, _ in updateUI() }
     }
     
     private func updateUI() {
@@ -164,48 +182,6 @@ private struct MesoNoseSectionView: View {
             
             // Command Triggers Grid
             VStack(spacing: 10) {
-                // 1. Main Operations Row
-                HStack(spacing: 10) {
-                    Button(action: { bleManager.startActiveSampling() }) {
-                        Label("Start Sampling", systemImage: "play.fill")
-                            .font(.footnote)
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.teal)
-                    
-                    Button(action: { bleManager.stopSampling() }) {
-                        Label("Stop Sampling", systemImage: "stop.fill")
-                            .font(.footnote)
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                }
-                
-                // 2. Mode Configurations Row
-                HStack(spacing: 8) {
-                    Button(action: { bleManager.setActiveSamplingMode() }) {
-                        Label("LP Mode (3s)", systemImage: "bolt.fill")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.teal)
-                    
-                    Button(action: { bleManager.setUltraLowSamplingMode() }) {
-                        Label("5m Sampling", systemImage: "leaf.fill")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.indigo)
-                }
-                
                 // 3. Breath Sequence Trigger (Only visible when state is idle)
                 if bleManager.breathTestState == .idle {
                     Button(action: { bleManager.triggerBreathTest() }) {

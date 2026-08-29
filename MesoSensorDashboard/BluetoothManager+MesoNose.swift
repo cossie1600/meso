@@ -18,6 +18,9 @@ extension BluetoothManager {
     
     /// Sends a command payload specifically to the Meso Nose peripheral
     func sendMesoNoseCommand(_ command: AppConfig.MesoNoseCommand) {
+        // Record the command so isUltraLowSamplingMode() can inspect it
+        self.lastSentCommand = command
+
         guard let peripheral = mesoNosePeripheral else {
             AppLogger.writeLog("Cannot send '\(command.description)': Meso Nose device not found in connected peripherals.")
             return
@@ -69,6 +72,12 @@ extension BluetoothManager {
         } else {
             sendMesoNoseCommand(.setUltraLowSamplingMode)
         }
+    }
+    
+
+    /// Returns `true` if the Meso Nose sensor is currently configured for Ultra Low Power sampling mode.
+    func isUltraLowSamplingMode() -> Bool {
+        return self.lastSentCommand == .setUltraLowSamplingMode
     }
 
     func triggerBreathTest() {
