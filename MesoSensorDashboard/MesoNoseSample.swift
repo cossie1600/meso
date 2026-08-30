@@ -31,7 +31,7 @@ enum MesoNoseKeys {
 // MARK: - Model
 struct MesoNoseSample: Identifiable, Codable {
     let id: UUID
-    let timestamp: Date
+    var timestamp: Date
     let temp: Double            // "rt" aka relative temperature
     let humidity: Double        // "rh" aka relative humidity
     let pressure: Double        // "press" aka pressure
@@ -39,7 +39,21 @@ struct MesoNoseSample: Identifiable, Codable {
     let breathDropDelta: Double // "breath_drop_delta"
     let breathMin: Int          // "breath_min"
     let ptcResult: String       // "ptc_result"
+    
+    /// Memberwise initializer for constructing samples with exact database timestamps
+    init(id: UUID = UUID(), timestamp: Date = Date(), temp: Double, humidity: Double, pressure: Double = 0.0, voc: Int, breathDropDelta: Double, breathMin: Int, ptcResult: String) {
+        self.id = id
+        self.timestamp = timestamp
+        self.temp = temp
+        self.humidity = humidity
+        self.pressure = pressure
+        self.voc = voc
+        self.breathDropDelta = breathDropDelta
+        self.breathMin = breathMin
+        self.ptcResult = ptcResult
+    }
 
+    /// Custom initializer for parsing incoming raw JSON streams from hardware
     init?(jsonString: String) {
         guard let data = jsonString.data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {

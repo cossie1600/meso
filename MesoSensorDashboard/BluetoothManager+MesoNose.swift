@@ -5,6 +5,7 @@
 //  Created by Thomas Ai Mak on 8/8/26.
 //
 
+
 import Foundation
 import CoreBluetooth
 import SwiftData
@@ -18,7 +19,6 @@ extension BluetoothManager {
     
     /// Sends a command payload specifically to the Meso Nose peripheral
     func sendMesoNoseCommand(_ command: AppConfig.MesoNoseCommand) {
-        // Record the command so isUltraLowSamplingMode() can inspect it
         self.lastSentCommand = command
 
         guard let peripheral = mesoNosePeripheral else {
@@ -26,12 +26,21 @@ extension BluetoothManager {
             return
         }
         
-        let targetChar = writeCharacteristics[peripheral.identifier] ?? peripheral.services?
-            .flatMap { $0.characteristics ?? [] }
-            .first { $0.properties.contains(.write) || $0.properties.contains(.writeWithoutResponse) }
+        var targetChar = writeCharacteristics[peripheral.identifier]
+        
+        // Dynamic fallback discovery if write characteristics were lost across background restores
+        if targetChar == nil {
+            targetChar = peripheral.services?
+                .flatMap { $0.characteristics ?? [] }
+                .first { $0.properties.contains(.write) || $0.properties.contains(.writeWithoutResponse) }
+            
+            if let foundChar = targetChar {
+                writeCharacteristics[peripheral.identifier] = foundChar
+            }
+        }
         
         guard let char = targetChar else {
-            AppLogger.writeLog("Cannot send '\(command.description)': Write characteristic for Meso Nose (\(peripheral.identifier)) not found.")
+            AppLogger.writeLog("Cannot send '\(command.description)': Write characteristic for Meso Nose (\(peripheral.identifier)) not cached.")
             return
         }
         
@@ -73,9 +82,7 @@ extension BluetoothManager {
             sendMesoNoseCommand(.setUltraLowSamplingMode)
         }
     }
-    
 
-    /// Returns `true` if the Meso Nose sensor is currently configured for Ultra Low Power sampling mode.
     func isUltraLowSamplingMode() -> Bool {
         return self.lastSentCommand == .setUltraLowSamplingMode
     }
@@ -97,74 +104,73 @@ extension BluetoothManager {
     }
 
     func handleMesoNosePacket(_ text: String) {
-            guard let data = text.data(using: .utf8),
-                  let jsonObj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        guard let data = text.data(using: .utf8),
+              let jsonObj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                
-                // 1. Intercept Status Tokens
-                if let status = jsonObj[MesoNoseKeys.status] as? String, status == "BREATH_TEST_STARTED" {
-                    self.startCountdownTimer(from: 4)
+            // 1. Intercept Status Tokens
+            if let status = jsonObj[MesoNoseKeys.status] as? String, status == "BREATH_TEST_STARTED" {
+                self.startCountdownTimer(from: 4)
+                return
+            }
+            
+            // 2. Intercept Firmware State Transitions
+            if let state = jsonObj[MesoNoseKeys.state] as? String {
+                switch state {
+                case "WARMING_UP":
+                    let seconds = jsonObj["seconds"] as? Int ?? 4
+                    self.startCountdownTimer(from: seconds)
                     return
-                }
-                
-                // 2. Intercept Firmware State Transitions
-                if let state = jsonObj[MesoNoseKeys.state] as? String {
-                    switch state {
-                    case "WARMING_UP":
-                        let seconds = jsonObj["seconds"] as? Int ?? 4
-                        self.startCountdownTimer(from: seconds)
-                        return
-                        
-                    case "READY_PLEASE_BLOW":
-                        self.mockDataTimer?.invalidate()
-                        self.breathTestState = .blowNow
-                        self.statusText = "BLOW NOW"
-                        return
-
-                    case "TESTING_SENSING_BREATH":
-                        self.mockDataTimer?.invalidate()
-                        self.breathTestState = .processing
-                        self.statusText = "Analyzing breath sample..."
-                        return
-                        
-                    case "TIMEOUT":
-                        self.mockDataTimer?.invalidate()
-                        self.breathTestState = .timeout
-                        self.statusText = "No Breath Detected"
-                        return
-                        
-                    default:
-                        break
-                    }
-                }
-                
-                // 3. Attempt parsing the payload into a MesoNoseSample
-                guard let sample = MesoNoseSample(jsonString: text) else {
-                    if jsonObj["dH"] == nil && jsonObj["gDrop"] == nil {
-                        AppLogger.writeLog("⚠️ Failed to parse MesoNoseSample from JSON payload: \(text)")
-                    }
-                    return
-                }
-                
-                // 4. Check if this is a completed breath test evaluation result
-                let isFinalResult = sample.breathDropDelta > 0.0 || (sample.ptcResult != "NONE" && !sample.ptcResult.isEmpty)
-                
-                if isFinalResult {
-                    self.mockDataTimer?.invalidate()
-                    self.breathTestState = .completed
-                    self.statusText = "Analysis Complete"
                     
-                    // Prepend to array so SwiftUI views observing mesoNoseSamples.first pick up the completed result immediately
-                    self.mesoNoseSamples.insert(sample, at: 0)
-                    self.saveMesoNoseToDatabase(sample)
-                } else if self.breathTestState == .idle {
-                    // Only overwrite telemetry array for routine background ambient samples if no active completion state is showing
-                    self.mesoNoseSamples.insert(sample, at: 0)
+                case "READY_PLEASE_BLOW":
+                    self.mockDataTimer?.invalidate()
+                    self.breathTestState = .blowNow
+                    self.statusText = "BLOW NOW"
+                    return
+
+                case "TESTING_SENSING_BREATH":
+                    self.mockDataTimer?.invalidate()
+                    self.breathTestState = .processing
+                    self.statusText = "Analyzing breath sample..."
+                    return
+                    
+                case "TIMEOUT":
+                    self.mockDataTimer?.invalidate()
+                    self.breathTestState = .timeout
+                    self.statusText = "No Breath Detected"
+                    return
+                    
+                default:
+                    break
                 }
             }
+            
+            // 3. Attempt parsing the payload into a MesoNoseSample
+            guard let sample = MesoNoseSample(jsonString: text) else {
+                if jsonObj["dH"] == nil && jsonObj["gDrop"] == nil {
+                    AppLogger.writeLog("⚠️ Failed to parse MesoNoseSample from JSON payload: \(text)")
+                }
+                return
+            }
+            
+            // 4. Save every valid incoming packet directly to SQLite via SwiftData
+            self.saveMesoNoseToDatabase(sample)
+            
+            // 5. Check UI state and update in-memory array for active subscribers
+            let isFinalResult = sample.breathDropDelta > 0.0 || (sample.ptcResult != "NONE" && !sample.ptcResult.isEmpty)
+            
+            if isFinalResult {
+                self.mockDataTimer?.invalidate()
+                self.breathTestState = .completed
+                self.statusText = "Analysis Complete"
+                self.mesoNoseSamples.insert(sample, at: 0)
+            } else if self.breathTestState == .idle {
+                self.mesoNoseSamples.insert(sample, at: 0)
+            }
         }
+    }
 
     private func startCountdownTimer(from seconds: Int) {
         self.mockDataTimer?.invalidate()
@@ -193,7 +199,6 @@ extension BluetoothManager {
 }
 
 extension String {
-    /// Inspects the raw text string to identify if it originates from the Meso Nose (BME688) firmware
     var isMesoNosePayload: Bool {
         let trimmed = self.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("{") && trimmed.hasSuffix("}") else { return false }

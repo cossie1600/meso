@@ -98,4 +98,36 @@ extension BluetoothManager {
             AppLogger.writeLog("❌ SwiftData Meso Nose Save Error: \(error.localizedDescription)")
         }
     }
+
+    /// Hydrates historical Meso Nose samples from disk into the in-memory array on app launch
+        @MainActor
+        func fetchHistoricalMesoNoseData() {
+            guard let container = self.modelContainer else { return }
+            
+            var descriptor = FetchDescriptor<DB_MesoNoseSample>(
+                sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+            )
+            descriptor.fetchLimit = 100
+            
+            do {
+                let context = container.mainContext
+                let dbRecords = try context.fetch(descriptor)
+                
+                self.mesoNoseSamples = dbRecords.map { db in
+                    MesoNoseSample(
+                        timestamp: db.timestamp, // Directly binds the exact stored SQLite timestamp
+                        temp: db.temp,
+                        humidity: db.humidity,
+                        pressure: 0.0,
+                        voc: db.voc,
+                        breathDropDelta: db.breathDropDelta,
+                        breathMin: db.breathMin,
+                        ptcResult: db.ptcResult
+                    )
+                }
+                AppLogger.writeLog("Hydrated \(self.mesoNoseSamples.count) historical Meso Nose samples with exact timestamps from disk.")
+            } catch {
+                AppLogger.writeLog("❌ Failed to fetch Meso Nose samples: \(error)")
+            }
+        }
 }

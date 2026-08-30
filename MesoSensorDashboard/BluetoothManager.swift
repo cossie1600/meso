@@ -2,8 +2,6 @@
 //  BluetoothManager.swift
 //  MesoSensorDashboard
 //
-//  Created by Thomas Ai Mak on 7/10/26.
-//
 
 import Foundation
 import CoreBluetooth
@@ -138,6 +136,9 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             self.statusText = "Error: Use Simulator Bridge on Mac."
 #endif
         }
+        DispatchQueue.main.async {
+            self.fetchHistoricalMesoNoseData()
+        }
     }
     
     // MARK: - CBCentralManagerDelegate
@@ -255,6 +256,11 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
                 AppLogger.writeLog("Swift BLE: Restoring peripheral session: \(restoredPeripheral.name ?? "Device")")
                 connectedPeripherals[restoredPeripheral.identifier] = restoredPeripheral
                 restoredPeripheral.delegate = self
+                
+                // Re-discover GATT services to restore cached write characteristics
+                if restoredPeripheral.state == .connected {
+                    restoredPeripheral.discoverServices(nil)
+                }
             }
         }
     }
@@ -363,23 +369,50 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             parseMesoPinPacket(line)
         }
         
-        // 2. Continuous JSON Object Extraction
-        if currentBuffer.contains("{") && currentBuffer.contains("}") {
-            if let startIdx = currentBuffer.firstIndex(of: "{"),
-               let endIdx = currentBuffer.lastIndex(of: "}") {
-                
-                if startIdx < endIdx {
-                    let jsonCandidate = String(currentBuffer[startIdx...endIdx])
-                    
-                    if jsonCandidate.isMesoNosePayload {
-                        AppLogger.writeLog("Ingestion (Extracted JSON): Meso Nose -> \(jsonCandidate)")
-                        handleMesoNosePacket(jsonCandidate)
-                        
-                        let nextIndex = currentBuffer.index(after: endIdx)
-                        incomingBuffers[deviceID] = (nextIndex < currentBuffer.endIndex) ? String(currentBuffer[nextIndex...]) : ""
+        // 2. Sequential Balanced JSON Object Extraction
+        let jsonObjects = extractJSONObjects(from: &currentBuffer)
+        incomingBuffers[deviceID] = currentBuffer
+        
+        for jsonCandidate in jsonObjects {
+            if jsonCandidate.isMesoNosePayload {
+                AppLogger.writeLog("Ingestion (Extracted JSON): Meso Nose -> \(jsonCandidate)")
+                handleMesoNosePacket(jsonCandidate)
+            }
+        }
+    }
+    
+    /// Extract distinct JSON objects sequentially by tracking brace nesting depth[cite: 2]
+    private func extractJSONObjects(from buffer: inout String) -> [String] {
+        var results: [String] = []
+        var depth = 0
+        var startIndex: String.Index? = nil
+        var lastParsedEndIndex: String.Index? = nil
+        
+        for index in buffer.indices {
+            let char = buffer[index]
+            if char == "{" {
+                if depth == 0 {
+                    startIndex = index
+                }
+                depth += 1
+            } else if char == "}" {
+                if depth > 0 {
+                    depth -= 1
+                    if depth == 0, let start = startIndex {
+                        let jsonString = String(buffer[start...index])
+                        results.append(jsonString)
+                        lastParsedEndIndex = index
+                        startIndex = nil
                     }
                 }
             }
         }
+        
+        if let lastEnd = lastParsedEndIndex {
+            let nextIndex = buffer.index(after: lastEnd)
+            buffer = (nextIndex < buffer.endIndex) ? String(buffer[nextIndex...]) : ""
+        }
+        
+        return results
     }
-}
+}   
