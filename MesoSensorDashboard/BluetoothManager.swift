@@ -93,6 +93,10 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     var isRoomBaselineReady: Bool {
         guard breathTestState == .idle,
               let latest = mesoNoseSamples.first else { return false }
+        let validSensors = latest.temp > 0
+                            && latest.humidity > 0
+                            && latest.pressure > 0
+                            && latest.voc > 0
         return latest.voc > 10000 && latest.breathDropDelta == 0.0
     }
     

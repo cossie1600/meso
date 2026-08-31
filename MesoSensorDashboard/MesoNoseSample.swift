@@ -9,7 +9,7 @@ import Foundation
 
 // MARK: - Global Keys Constant
 enum MesoNoseKeys {
-    static let rt = "rt"
+    static let rt = "temp"
     static let rh = "rh"
     static let press = "press"
     static let voc = "voc"

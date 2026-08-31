@@ -83,7 +83,7 @@ struct AppConfig {
     }
     // 🔑 BME688 JSON Payload Discriminators
     enum MesoNoseKeys {
-        static let temp = "\"rt\""
+        static let temp = "\"temp\""
         static let voc = "\"voc\""
         static let ptcResult = "\"ptc_result\""
             
