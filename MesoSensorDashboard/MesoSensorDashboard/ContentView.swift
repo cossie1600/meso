@@ -122,21 +122,21 @@ private struct MesoNoseSectionView: View {
                 Spacer()
                 
                 // 🟢 Baseline Readiness Status Badge
-                if bleManager.isRoomBaselineReady {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 8, height: 8)
-                        Text("Baseline Ready")
-                            .font(.caption2)
-                            .fontWeight(.bold)
-                            .foregroundColor(.green)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.green.opacity(0.15))
-                    .cornerRadius(8)
+                let statusColor: Color = bleManager.isRoomBaselineReady ? .green : .red
+
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 8, height: 8)
+                    Text(bleManager.isRoomBaselineReady ? "Baseline Ready" : "Baseline Not Ready")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(statusColor)
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(statusColor.opacity(0.15))
+                .clipShape(Capsule())
                 
                 PtcBadgeView(result: result)
             }
@@ -191,7 +191,8 @@ private struct MesoNoseSectionView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.blue)
+                    .tint(bleManager.isRoomBaselineReady ? .blue : .gray)
+                    .disabled(!bleManager.isRoomBaselineReady)
                 }
             }
             .padding(.top, 6)
