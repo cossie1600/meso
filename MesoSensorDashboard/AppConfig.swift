@@ -8,13 +8,25 @@
 import Foundation
 import SwiftUI
 
+// 🎛️ Global Sampling Mode Enum
+enum SamplingMode: String, CaseIterable, Identifiable {
+    case active3s = "Active Sampling (3s)"
+    case ulp5m = "Ultra Low Power (5m)"
+    case stopped = "Stopped"
+    
+    var id: String { rawValue }
+}
+
 struct AppConfig {
-    // 🎛️ Environment-Specific Toggles
+    // 🎛️ Environment-Specific Toggles & Config
     static let useMockSimulatorBridge: Bool = false
     static let forceInitialEmergencyState: Bool = false
     static let simulatorSpeedSec: TimeInterval = 5.0
     enum MockFormat { case csv, json }
     static let activeMockFormat: MockFormat = .json
+    
+    // Default Sampling Configuration
+    static var samplingMode: SamplingMode = .ulp5m
     
     // 📡 BLE Hardware Identification
     // Meso Pin (BMV080 Air Quality)
@@ -26,7 +38,7 @@ struct AppConfig {
     static let mesoNoseCharacteristicUUIDString: String = "4FA215F0-0002-4B0E-B682-1A4C70F3A601"
     static let mesoNoseBluetoothName = "Meso Nose"
     
-    // app info
+    // App Info
     static let companyName = "ClingGem"
     
     // 🧹 Database Cleanup Policy
@@ -35,16 +47,13 @@ struct AppConfig {
     // 🚨 Logging Properties
     static let isLoggingEnabled: Bool = true
     static let applogFileName: String = "meso_sensor_log.txt"
-    
-    // 🎯 Set your limit in clean, human-readable Megabytes!
     static let maxLogSizeInMB: Int = 5
     
-    // ⚙️ Calculated helper that converts your MB choice into raw bytes for the system
     static var maxLogSizeInBytes: Int64 {
         return Int64(maxLogSizeInMB) * 1024 * 1024
     }
     
-    // Reading constants
+    // Reading Constants
     static let metricPMOne = "PM1.0"
     static let metricPMTwoFive = "PM2.5"
     static let metricPMTen = "PM10.0"
@@ -62,7 +71,6 @@ struct AppConfig {
     
     // 🎨 Shared Dashboard UI Tokens & Formatting
     enum DashboardUI {
-        // Layout Spacing & Radius
         static let cardSpacing: CGFloat = 8
         static let metricGridSpacing: CGFloat = 12
         static let paddingVertical: CGFloat = 4
@@ -71,7 +79,6 @@ struct AppConfig {
         static let badgeCornerRadius: CGFloat = 6
         static let backgroundOpacity: Double = 0.2
         
-        // Formatter Specifiers
         enum Formats {
             static let temp = "%.1f°C"
             static let humidity = "%.1f%%"
@@ -81,11 +88,14 @@ struct AppConfig {
             static let pm = "%.1f µg/m³"
         }
     }
+
     // 🔑 BME688 JSON Payload Discriminators
     enum MesoNoseKeys {
         static let temp = "\"temp\""
         static let voc = "\"voc\""
         static let ptcResult = "\"ptc_result\""
+        static let status = "status"
+        static let state = "state"
             
         static var allDiscriminators: [String] {
             [temp, voc, ptcResult]

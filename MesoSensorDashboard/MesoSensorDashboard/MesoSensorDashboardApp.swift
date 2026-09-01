@@ -11,89 +11,42 @@ import SwiftData
 @main
 struct MesoSensorDashboardApp: App {
     let container: ModelContainer
-    
-    // 1. Declare the StateObject without giving it an immediate value yet
-    @StateObject private var bleManager: BluetoothManager
-    @Environment(\.scenePhase) private var scenePhase
-    
+    @StateObject private var bluetoothManager: BluetoothManager
+
     init() {
         do {
-            // 2. Spin up your physical SwiftData database container registering BOTH models
-            let mainContainer = try ModelContainer(for: DB_PMSample.self, DB_MesoNoseSample.self)
-            self.container = mainContainer
+            // Explicitly declare both database schemas
+            let schema = Schema([
+                DB_PMSample.self,
+                DB_MesoNoseSample.self
+            ])
+            let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
             
-            // 3. Inject the context right into the BluetoothManager initializer
-            self._bleManager = StateObject(wrappedValue: BluetoothManager(modelContainer: mainContainer))
+            let sharedContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            self.container = sharedContainer
             
-            #if targetEnvironment(simulator)
-            if let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                let logPath = docsURL.appendingPathComponent(AppConfig.applogFileName).path
-                UIPasteboard.general.string = logPath
-                AppLogger.writeLog("📋 Simulator CSV Log Path copied to Clipboard!")
-            }
-            #endif
-            
+            // Inject the created container into BluetoothManager
+            _bluetoothManager = StateObject(wrappedValue: BluetoothManager(modelContainer: sharedContainer))
         } catch {
-            fatalError("CRITICAL: Failed to initialize SwiftData ModelContainer: \(error)")
+            // Prevent app crash on migration error by falling back to in-memory store
+            print("⚠️ SwiftData initialization failed: \(error.localizedDescription). Falling back to temporary store.")
+            
+            let fallbackSchema = Schema([DB_PMSample.self, DB_MesoNoseSample.self])
+            let fallbackConfig = ModelConfiguration(schema: fallbackSchema, isStoredInMemoryOnly: true)
+            
+            let fallbackContainer = (try? ModelContainer(for: fallbackSchema, configurations: [fallbackConfig]))
+                ?? { fatalError("Critical failure: Unable to create SwiftData container.") }()
+            
+            self.container = fallbackContainer
+            _bluetoothManager = StateObject(wrappedValue: BluetoothManager(modelContainer: fallbackContainer))
         }
     }
-    
+
     var body: some Scene {
         WindowGroup {
-            MainTabView()
-                .environmentObject(bleManager)
-                .modelContainer(container)
-                .onAppear {
-                    // Run the database pruning routine exactly once on launch!
-                    let context = ModelContext(container)
-                    deleteOldReadings(context: context)
-                }
-                .onChange(of: scenePhase) { oldPhase, newPhase in
-                    switch newPhase {
-                    case .active:
-                        UIApplication.shared.isIdleTimerDisabled = true
-                        AppLogger.writeLog("App transitioned from \(oldPhase) to \(newPhase). Screen auto-lock disabled.")
-                        
-                    case .inactive, .background:
-                        UIApplication.shared.isIdleTimerDisabled = false
-                        AppLogger.writeLog("App transitioned to \(newPhase). Screen auto-lock behavior restored.")
-                        
-                    @unknown default:
-                        break
-                    }
-                }
+            ContentView()
+                .environmentObject(bluetoothManager)
         }
-    }
-    
-    // MARK: - Database Pruning Logic
-    private func deleteOldReadings(context: ModelContext) {
-        let calendar = Calendar.current
-        guard let cutoffDate = calendar.date(
-            byAdding: .day,
-            value: -AppConfig.databaseRetentionDays,
-            to: Date()
-        ) else {
-            AppLogger.writeLog("❌ Error: Could not calculate database cutoff date.")
-            return
-        }
-        
-        do {
-            // Prune PM Samples
-            try context.delete(
-                model: DB_PMSample.self,
-                where: #Predicate { $0.timestamp < cutoffDate }
-            )
-            
-            // Prune Meso Nose Samples
-            try context.delete(
-                model: DB_MesoNoseSample.self,
-                where: #Predicate { $0.timestamp < cutoffDate }
-            )
-            
-            try context.save()
-            AppLogger.writeLog("Database cleanup complete. Pruned PM & Meso Nose records older than \(AppConfig.databaseRetentionDays) days.")
-        } catch {
-            AppLogger.writeLog("Failed to auto-prune database: \(error.localizedDescription)")
-        }
+        .modelContainer(container)
     }
 }

@@ -2,8 +2,6 @@
 //  BluetoothManager+Database.swift
 //  MesoSensorDashboard
 //
-//  Created by Thomas Ai Mak on 7/14/26.
-//
 
 import Foundation
 import SwiftData
@@ -14,7 +12,6 @@ extension BluetoothManager {
     func databaseAlreadyContains(footprint: String) -> Bool {
         guard let container = self.modelContainer else { return false }
         
-        // Fetch the single most recent sample saved to check against
         var descriptor = FetchDescriptor<DB_PMSample>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
         descriptor.fetchLimit = 1
         
@@ -23,14 +20,11 @@ extension BluetoothManager {
             let recentSamples = try context.fetch(descriptor)
             
             guard let latestSample = recentSamples.first else {
-                return false // Database is completely empty
+                return false
             }
             
-            // Extract the core sensor readings from your latest saved sample
             let latestValuesOnly = "\(latestSample.pm1)_\(latestSample.pm25)_\(latestSample.pm10)"
             
-            // Strip the timestamp off the incoming footprint to compare pure data values
-            // Footprint format: "timestamp_pm1_pm25_pm10" -> split by "_" and drop the timestamp element
             let footprintcomponents = footprint.components(separatedBy: "_")
             if footprintcomponents.count >= 4 {
                 let incomingValuesOnly = "\(footprintcomponents[1])_\(footprintcomponents[2])_\(footprintcomponents[3])"
@@ -44,7 +38,6 @@ extension BluetoothManager {
         }
     }
     
-    /// Saves a standard PM sensor packet to SQLite via SwiftData
     @MainActor
     func saveToSQLite(_ packet: IncomingPacket) {
         guard let container = self.modelContainer else {
@@ -70,7 +63,6 @@ extension BluetoothManager {
         }
     }
     
-    /// Saves a Meso Nose sensor sample to SQLite via SwiftData
     @MainActor
     func saveMesoNoseToDatabase(_ sample: MesoNoseSample) {
         guard let container = self.modelContainer else {
@@ -83,6 +75,7 @@ extension BluetoothManager {
             timestamp: Date(),
             temp: sample.temp,
             humidity: sample.humidity,
+            pressure: sample.pressure,
             voc: sample.voc,
             breathDropDelta: sample.breathDropDelta,
             breathMin: sample.breathMin,
@@ -99,35 +92,34 @@ extension BluetoothManager {
         }
     }
 
-    /// Hydrates historical Meso Nose samples from disk into the in-memory array on app launch
-        @MainActor
-        func fetchHistoricalMesoNoseData() {
-            guard let container = self.modelContainer else { return }
+    @MainActor
+    func fetchHistoricalMesoNoseData() {
+        guard let container = self.modelContainer else { return }
+        
+        var descriptor = FetchDescriptor<DB_MesoNoseSample>(
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        descriptor.fetchLimit = 100
+        
+        do {
+            let context = container.mainContext
+            let dbRecords = try context.fetch(descriptor)
             
-            var descriptor = FetchDescriptor<DB_MesoNoseSample>(
-                sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
-            )
-            descriptor.fetchLimit = 100
-            
-            do {
-                let context = container.mainContext
-                let dbRecords = try context.fetch(descriptor)
-                
-                self.mesoNoseSamples = dbRecords.map { db in
-                    MesoNoseSample(
-                        timestamp: db.timestamp, // Directly binds the exact stored SQLite timestamp
-                        temp: db.temp,
-                        humidity: db.humidity,
-                        pressure: 0.0,
-                        voc: db.voc,
-                        breathDropDelta: db.breathDropDelta,
-                        breathMin: db.breathMin,
-                        ptcResult: db.ptcResult
-                    )
-                }
-                AppLogger.writeLog("Hydrated \(self.mesoNoseSamples.count) historical Meso Nose samples with exact timestamps from disk.")
-            } catch {
-                AppLogger.writeLog("❌ Failed to fetch Meso Nose samples: \(error)")
+            self.mesoNoseSamples = dbRecords.map { db in
+                MesoNoseSample(
+                    timestamp: db.timestamp,
+                    temp: db.temp,
+                    humidity: db.humidity,
+                    pressure: db.pressure,
+                    voc: db.voc,
+                    breathDropDelta: db.breathDropDelta,
+                    breathMin: db.breathMin,
+                    ptcResult: db.ptcResult
+                )
             }
+            AppLogger.writeLog("Hydrated \(self.mesoNoseSamples.count) historical Meso Nose samples with exact timestamps from disk.")
+        } catch {
+            AppLogger.writeLog("❌ Failed to fetch Meso Nose samples: \(error)")
         }
+    }
 }

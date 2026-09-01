@@ -40,23 +40,25 @@ struct AirQualityMath {
     }
     
     private static func filterOutliersAndAverage(_ values: [Double]) -> Double {
-        let nonNegativeValues = values.filter { $0 >= 0.0 }
-        guard !values.isEmpty && !nonNegativeValues.isEmpty else { return 0.0 }
+        // 1. Filter out invalid negative values first
+        let cleanInput = values.filter { $0 >= 0.0 }
+        guard !cleanInput.isEmpty else { return 0.0 }
         
-        // 1. Find the Median (The middle value when sorted)
-        let sortedValues = values.sorted()
+        // 2. Safely compute the Median
+        let sortedValues = cleanInput.sorted()
         let medianBaseline = sortedValues[sortedValues.count / 2]
         
-        // 2. Discard sudden spikes relative to our rock-solid median
-        let cleanValues = values.filter { value in
+        // 3. Discard sudden spikes relative to median
+        let cleanValues = cleanInput.filter { value in
             let absoluteDelta = value - medianBaseline
             let isSuddenSpike = absoluteDelta > anomalyAbsoluteThreshold && value > (medianBaseline * anomalyMultiplierThreshold)
-            
             return !isSuddenSpike
         }
         
-        // 3. Compute final clean average
+        // 4. Safely check for empty array before performing division
+        guard !cleanValues.isEmpty else { return 0.0 }
+        
         let cleanSum = cleanValues.reduce(0, +)
-        return cleanValues.isEmpty ? 0.0 : (cleanSum / Double(cleanValues.count))
+        return cleanSum / Double(cleanValues.count)
     }
 }

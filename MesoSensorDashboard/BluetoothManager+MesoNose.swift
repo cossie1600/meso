@@ -5,7 +5,6 @@
 //  Created by Thomas Ai Mak on 8/8/26.
 //
 
-
 import Foundation
 import CoreBluetooth
 import SwiftData
@@ -28,7 +27,6 @@ extension BluetoothManager {
         
         var targetChar = writeCharacteristics[peripheral.identifier]
         
-        // Dynamic fallback discovery if write characteristics were lost across background restores
         if targetChar == nil {
             targetChar = peripheral.services?
                 .flatMap { $0.characteristics ?? [] }
@@ -51,49 +49,33 @@ extension BluetoothManager {
         }
     }
 
-    func startActiveSampling() {
-        if AppConfig.useMockSimulatorBridge {
-            startMockDataStream()
-        } else {
-            sendMesoNoseCommand(.startActiveSampling)
-        }
-    }
-
+    // MARK: - Sampling Directives
     func stopSampling() {
-        if AppConfig.useMockSimulatorBridge {
-            stopMockDataStream()
-        } else {
-            sendMesoNoseCommand(.stopSampling)
-        }
+        startSampling(mode: .stopped)
     }
     
     func setActiveSamplingMode() {
-        if AppConfig.useMockSimulatorBridge {
-            AppLogger.writeLog("[Mock] Set Active Sampling Mode (3s LP)")
-        } else {
-            sendMesoNoseCommand(.setActiveSamplingMode)
-        }
+        startSampling(mode: .active3s)
     }
 
     func setUltraLowSamplingMode() {
-        if AppConfig.useMockSimulatorBridge {
-            AppLogger.writeLog("[Mock] Set Ultra Low Sampling Mode (5m ULP)")
-        } else {
-            sendMesoNoseCommand(.setUltraLowSamplingMode)
-        }
+        startSampling(mode: .ulp5m)
     }
 
     func isUltraLowSamplingMode() -> Bool {
-        return self.lastSentCommand == .setUltraLowSamplingMode
+        return currentSamplingMode == .ulp5m
     }
 
+    // MARK: - Breath Test Trigger & Handling
     func triggerBreathTest() {
-        self.mockDataTimer?.invalidate()
-        
         DispatchQueue.main.async { [weak self] in
-            self?.breathTestState = .warmingUp
-            self?.countdownSeconds = 4
-            self?.statusText = "Warming up sensor..."
+            guard let self = self else { return }
+            
+            // Determine required warmup duration: 15s for ULP mode, 4s for active mode
+            let warmupSeconds = self.isUltraLowSamplingMode() ? 15 : 4
+            AppLogger.writeLog("Triggering Breath Test. Current Mode: \(self.currentSamplingMode.rawValue). Preheating for \(warmupSeconds)s...")
+            
+            self.startCountdownTimer(from: warmupSeconds)
         }
         
         if AppConfig.useMockSimulatorBridge {
@@ -110,36 +92,45 @@ extension BluetoothManager {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
+            let defaultWarmup = self.isUltraLowSamplingMode() ? 15 : 4
+            
             // 1. Intercept Status Tokens
-            if let status = jsonObj[MesoNoseKeys.status] as? String, status == "BREATH_TEST_STARTED" {
-                self.startCountdownTimer(from: 4)
+            if let status = jsonObj[AppConfig.MesoNoseKeys.status] as? String, status == "BREATH_TEST_STARTED" {
+                if self.breathTestState != .warmingUp {
+                    self.startCountdownTimer(from: defaultWarmup)
+                }
                 return
             }
             
             // 2. Intercept Firmware State Transitions
-            if let state = jsonObj[MesoNoseKeys.state] as? String {
+            if let state = jsonObj[AppConfig.MesoNoseKeys.state] as? String {
                 switch state {
                 case "WARMING_UP":
-                    let seconds = jsonObj["seconds"] as? Int ?? 4
-                    self.startCountdownTimer(from: seconds)
+                    let seconds = jsonObj["seconds"] as? Int ?? defaultWarmup
+                    if self.breathTestState != .warmingUp {
+                        self.startCountdownTimer(from: seconds)
+                    }
                     return
                     
                 case "READY_PLEASE_BLOW":
                     self.mockDataTimer?.invalidate()
+                    self.mockDataTimer = nil
                     self.breathTestState = .blowNow
                     self.statusText = "BLOW NOW"
                     return
 
                 case "TESTING_SENSING_BREATH":
                     self.mockDataTimer?.invalidate()
+                    self.mockDataTimer = nil
                     self.breathTestState = .processing
                     self.statusText = "Analyzing breath sample..."
                     return
                     
                 case "TIMEOUT":
                     self.mockDataTimer?.invalidate()
-                    self.breathTestState = .timeout
+                    self.mockDataTimer = nil
                     self.statusText = "No Breath Detected"
+                    self.handleBreathTestCompletion(didSucceed: false)
                     return
                     
                 default:
@@ -155,7 +146,7 @@ extension BluetoothManager {
                 return
             }
             
-            // 4. Save every valid incoming packet directly to SQLite via SwiftData
+            // 4. Save every valid incoming packet directly to SwiftData
             self.saveMesoNoseToDatabase(sample)
             
             // 5. Check UI state and update in-memory array for active subscribers
@@ -163,9 +154,10 @@ extension BluetoothManager {
             
             if isFinalResult {
                 self.mockDataTimer?.invalidate()
-                self.breathTestState = .completed
+                self.mockDataTimer = nil
                 self.statusText = "Analysis Complete"
                 self.mesoNoseSamples.insert(sample, at: 0)
+                self.handleBreathTestCompletion(didSucceed: true)
             } else if self.breathTestState == .idle {
                 self.mesoNoseSamples.insert(sample, at: 0)
             }
@@ -173,26 +165,81 @@ extension BluetoothManager {
     }
 
     private func startCountdownTimer(from seconds: Int) {
-        self.mockDataTimer?.invalidate()
-        self.breathTestState = .warmingUp
-        self.countdownSeconds = seconds > 0 ? seconds : 4
-        
-        self.mockDataTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
-            DispatchQueue.main.async { [weak self] in
+            self.mockDataTimer?.invalidate()
+            self.mockDataTimer = nil
+            
+            self.breathTestState = .warmingUp
+            self.countdownSeconds = seconds
+            self.statusText = "Warming up sensor..."
+            
+            let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] t in
                 guard let self = self else {
-                    timer.invalidate()
+                    t.invalidate()
                     return
                 }
                 
                 if self.countdownSeconds > 1 {
                     self.countdownSeconds -= 1
                 } else {
-                    timer.invalidate()
+                    t.invalidate()
+                    self.mockDataTimer = nil
+                    
+                    // 1. Transition to BLOW NOW when warmup finishes
                     if self.breathTestState == .warmingUp {
                         self.breathTestState = .blowNow
                         self.statusText = "BLOW NOW"
+                        
+                        // 2. Start a 10-second timeout safety guard for the BLOW phase
+                        self.startBlowTimeoutGuard()
                     }
                 }
+            }
+            
+            RunLoop.main.add(timer, forMode: .common)
+            self.mockDataTimer = timer
+        }
+
+        private func startBlowTimeoutGuard() {
+            // Prevent stacking duplicate timeout timers
+            self.mockDataTimer?.invalidate()
+            
+            AppLogger.writeLog("BLOW NOW active. Starting 10s hardware response timeout guard...")
+            
+            self.mockDataTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { [weak self] _ in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    
+                    // If still stuck in blowNow or processing when timeout fires, recover gracefully
+                    if self.breathTestState == .blowNow || self.breathTestState == .processing {
+                        AppLogger.writeLog("⚠️ Blow window timed out with no hardware evaluation packet. Auto-recovering...")
+                        self.statusText = "No Breath Detected"
+                        self.handleBreathTestCompletion(didSucceed: false)
+                    }
+                }
+            }
+        }
+}
+
+// MARK: - Breath Test Lifecycle Recovery
+extension BluetoothManager {
+    
+    @MainActor
+    func handleBreathTestCompletion(didSucceed: Bool) {
+        self.lastTestCompletedDate = Date()
+        self.breathTestState = didSucceed ? .completed : .timeout
+        
+        AppLogger.writeLog("Breath test finished (\(didSucceed ? "Success" : "Timeout")). Starting 60s active purge...")
+        
+        // 1. Force active 3s sampling to heat the sensor and flush residual VOCs faster
+        self.startSampling(mode: .active3s)
+        
+        // 2. Revert to configured background mode (e.g., ULP 5m) after 60 seconds of active purging
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60.0) { [weak self] in
+            guard let self = self else { return }
+            if self.breathTestState == .completed || self.breathTestState == .timeout {
+                self.breathTestState = .idle
+                self.startSampling(mode: AppConfig.samplingMode)
+                AppLogger.writeLog("Post-test purge completed. Reverted to \(AppConfig.samplingMode.rawValue).")
             }
         }
     }
@@ -203,8 +250,8 @@ extension String {
         let trimmed = self.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("{") && trimmed.hasSuffix("}") else { return false }
         
-        return MesoNoseKeys.allKeys.contains { key in
-            trimmed.contains("\"\(key)\"")
+        return AppConfig.MesoNoseKeys.allDiscriminators.contains { discriminator in
+            trimmed.contains(discriminator)
         }
     }
 }

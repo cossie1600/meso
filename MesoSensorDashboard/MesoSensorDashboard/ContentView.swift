@@ -10,6 +10,27 @@ import Combine
 import SwiftData
 
 struct ContentView: View {
+    @EnvironmentObject var bleManager: BluetoothManager
+    
+    var body: some View {
+        TabView {
+            // Tab 1: Live Telemetry Dashboard
+            DashboardMainView()
+                .tabItem {
+                    Label("Dashboard", systemImage: "gauge.with.dots.needle.bottom.50percent")
+                }
+            
+            // Tab 2: Historical Telemetry Logs
+            HistoryContainerView()
+                .tabItem {
+                    Label("History", systemImage: "clock.arrow.circlepath")
+                }
+        }
+    }
+}
+
+// MARK: - Main Live Dashboard View
+private struct DashboardMainView: View {
     @Query(sort: \DB_PMSample.timestamp, order: .reverse) var allSamples: [DB_PMSample]
     @Query(sort: \DB_MesoNoseSample.timestamp, order: .reverse) var allNoseDbSamples: [DB_MesoNoseSample]
     @EnvironmentObject var bleManager: BluetoothManager
@@ -19,21 +40,17 @@ struct ContentView: View {
     @State private var cleanPM10: Double = 0.0
     @State private var isShowingSettings = false
     
-    /// The latest telemetry sample (ambient or evaluated)
     private var latestNoseSample: MesoNoseSample? {
         bleManager.mesoNoseSamples.first
     }
     
-    /// Finds the most recent completed breath test evaluation result
     private var latestBreathResult: PtcResult {
-        // 1. Search in-memory array for the newest sample with an active evaluation result
         if let evaluatedSample = bleManager.mesoNoseSamples.first(where: {
             $0.ptcResult != "NONE" && !$0.ptcResult.isEmpty
         }) {
             return PtcResult(rawValue: evaluatedSample.ptcResult) ?? .none
         }
         
-        // 2. Fallback to persisted database records if in-memory list is fresh/empty
         if let dbEvaluated = allNoseDbSamples.first(where: {
             $0.ptcResult != "NONE" && !$0.ptcResult.isEmpty
         }) {
@@ -47,7 +64,7 @@ struct ContentView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    // 1. Meso Nose Controls & Telemetry (Includes Breath Test Overlay)
+                    // 1. Meso Nose Controls & Telemetry
                     MesoNoseSectionView(
                         sample: latestNoseSample,
                         result: latestBreathResult
@@ -108,6 +125,33 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Tab 2: Combined History Navigation View
+private struct HistoryContainerView: View {
+    @EnvironmentObject var bleManager: BluetoothManager
+    @State private var selectedSegment = 0
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("History Source", selection: $selectedSegment) {
+                    Text("Meso Pin (PM)").tag(0)
+                    Text("Meso Nose (Breath)").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+
+                if selectedSegment == 0 {
+                    AirQualityHistoryView(bleManager: bleManager)
+                } else {
+                    MesoNoseHistoryView(bleManager: bleManager)
+                }
+            }
+            .navigationTitle("Telemetry History")
+        }
+    }
+}
+
 // MARK: - Subview 1: Meso Nose Section
 private struct MesoNoseSectionView: View {
     let sample: MesoNoseSample?
@@ -121,7 +165,6 @@ private struct MesoNoseSectionView: View {
                     .font(.headline)
                 Spacer()
                 
-                // 🟢 Baseline Readiness Status Badge
                 let statusColor: Color = bleManager.isRoomBaselineReady ? .green : .red
 
                 HStack(spacing: 4) {
@@ -141,9 +184,6 @@ private struct MesoNoseSectionView: View {
                 PtcBadgeView(result: result)
             }
             
-            // -------------------------------------------------------------
-            // BREATH TEST HUD OVERLAY (Renders when sequence is active)
-            // -------------------------------------------------------------
             if bleManager.breathTestState != .idle {
                 BreathTestOverlayView(bleManager: bleManager)
                     .transition(.scale.combined(with: .opacity))
@@ -154,6 +194,7 @@ private struct MesoNoseSectionView: View {
                 HStack(spacing: AppConfig.DashboardUI.metricGridSpacing) {
                     MetricCell(label: "Temp", value: String(format: AppConfig.DashboardUI.Formats.temp, nose.temp))
                     MetricCell(label: "Humidity", value: String(format: AppConfig.DashboardUI.Formats.humidity, nose.humidity))
+                    MetricCell(label: "Pressure", value: String(format: AppConfig.DashboardUI.Formats.pressure, nose.pressure))
                     MetricCell(label: "VOC", value: String(format: AppConfig.DashboardUI.Formats.gasRes, nose.voc))
                 }
                 
@@ -180,9 +221,7 @@ private struct MesoNoseSectionView: View {
                     .padding(.vertical, 4)
             }
             
-            // Command Triggers Grid
             VStack(spacing: 10) {
-                // 3. Breath Sequence Trigger (Only visible when state is idle)
                 if bleManager.breathTestState == .idle {
                     Button(action: { bleManager.triggerBreathTest() }) {
                         Label("Breath Test", systemImage: "waveform.and.mic")
