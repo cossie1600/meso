@@ -41,7 +41,7 @@ struct SettingsView: View {
                 // 🚀 Command Submission Button
                 Section {
                     Button(action: {
-                        bluetoothManager.startSampling(mode: selectedMode)
+                        bluetoothManager.setSamplingMode(mode: selectedMode)
                     }) {
                         HStack {
                             Spacer()

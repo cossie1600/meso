@@ -92,15 +92,18 @@ struct AppConfig {
 
     // 🔑 BME688 JSON Payload Discriminators
     enum MesoNoseKeys {
-        static let temp = "\"temp\""
-        static let press = "\"press\""       // 👈 Added pressure discriminator
-        static let voc = "\"voc\""
-        static let ptcResult = "\"ptc_result\""
-        static let status = "\"status\""     // 👈 Quoted status
-        static let state = "\"state\""       // 👈 Quoted state
+        static let temp = "temp"
+        static let press = "press"
+        static let voc = "voc"
+        static let ptcResult = "ptc_result"
+        static let status = "status"
+        static let state = "state"
+        static let rxCmd = "rx_cmd"
+        static let dH = "dH"
+        static let gDrop = "gDrop"
             
         static var allDiscriminators: [String] {
-            [temp, press, voc, ptcResult, status, state] // 👈 Updated full list
+            [temp, press, voc, ptcResult, status, state, rxCmd, dH, gDrop]
         }
     }
     

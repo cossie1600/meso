@@ -94,7 +94,6 @@ private struct DashboardMainView: View {
                 }
                 .padding(.horizontal)
             }
-            //.navigationTitle("Meso Dashboard")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { isShowingSettings = true }) {
@@ -197,17 +196,10 @@ private struct MesoNoseSectionView: View {
                         .controlSize(.small)
                         .tint(.orange)
                     
-                    if bleManager.isCoolingDown {
-                        Text("Sensor Purging: \(Int(bleManager.cooldownRemainingSeconds))s remaining")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(.orange)
-                    } else {
-                        Text("Stabilizing Sensor Baseline... Please wait")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(.orange)
-                    }
+                    Text(bleManager.isCoolingDown ? "Sensor Purging... Please wait" : "Stabilizing Sensor Baseline... Please wait")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.orange)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)

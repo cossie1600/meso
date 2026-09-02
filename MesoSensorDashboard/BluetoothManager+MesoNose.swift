@@ -51,15 +51,15 @@ extension BluetoothManager {
     
     // MARK: - Sampling Directives
     func stopSampling() {
-        startSampling(mode: .stopped)
+        setSamplingMode(mode: .stopped)
     }
     
     func setActiveSamplingMode() {
-        startSampling(mode: .active3s)
+        setSamplingMode(mode: .active3s)
     }
     
     func setUltraLowSamplingMode() {
-        startSampling(mode: .ulp5m)
+        setSamplingMode(mode: .ulp5m)
     }
     
     func isUltraLowSamplingMode() -> Bool {
@@ -71,21 +71,20 @@ extension BluetoothManager {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            // Guard against duplicate rapid taps while already in a test sequence
             guard self.breathTestState == .idle || self.breathTestState == .completed || self.breathTestState == .timeout else {
                 AppLogger.writeLog("⚠️ Breath test trigger ignored: state is currently '\(self.breathTestState)'.")
                 return
             }
             
-            let initialWarmupSeconds = self.isUltraLowSamplingMode() ? 15 : 4
-            self.breathTestState = .warmingUp
-            self.countdownSeconds = initialWarmupSeconds
-            self.statusText = "Warming up sensor..."
+            // Cancel initial startup burst timer so ULP mode is never forced mid-test
+            self.cancelInitialBurstTimer()
             
-            AppLogger.writeLog("Triggering Breath Test. Preheating (\(initialWarmupSeconds)s)...")
+            self.breathTestState = .warmingUp
+            self.statusText = "Heating sensor plate..."
+            
+            AppLogger.writeLog("Triggering Breath Test. Awaiting firmware READY_PLEASE_BLOW event...")
             
             self.sendMesoNoseCommand(.triggerBreathTest)
-            self.startCountdownTimer(from: initialWarmupSeconds)
         }
     }
     
@@ -96,21 +95,30 @@ extension BluetoothManager {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            // 1. Intercept Firmware State Transitions
+            // 1. Consume command acknowledgement receipts & status tokens
+            if jsonObj["rx_cmd"] != nil || jsonObj["status"] != nil {
+                return
+            }
+            
+            // 2. Consume 1-second blow debug packets ({"dH": ..., "gDrop": ...})
+            if jsonObj["dH"] != nil || jsonObj["gDrop"] != nil {
+                return
+            }
+            
+            // 3. Intercept Firmware State Transitions
             if let state = jsonObj[AppConfig.MesoNoseKeys.state] as? String {
                 switch state {
                 case "WARMING_UP":
-                    let seconds = jsonObj["seconds"] as? Int ?? (self.isUltraLowSamplingMode() ? 15 : 4)
-                    self.startCountdownTimer(from: seconds)
+                    self.breathTestState = .warmingUp
+                    self.statusText = "Heating sensor plate..."
                     return
                     
                 case "READY_PLEASE_BLOW":
+                    AppLogger.writeLog("Received READY_PLEASE_BLOW from hardware. Transitioning to BLOW NOW!")
                     self.transitionToBlowNow()
                     return
                     
                 case "TESTING_SENSING_BREATH":
-                    self.countdownTimer?.invalidate()
-                    self.countdownTimer = nil
                     self.breathTestState = .processing
                     self.statusText = "Analyzing breath sample..."
                     return
@@ -120,17 +128,16 @@ extension BluetoothManager {
                     self.handleBreathTestCompletion(didSucceed: false)
                     return
                     
+                case "PROFILE_LP", "PROFILE_ULP":
+                    // Safely consume profile state updates to prevent fallthrough
+                    return
+                    
                 default:
-                    break
+                    return // Return on any unhandled state string
                 }
             }
             
-            // 2. Ignore intermediate 1-second BLOW debug packets ({"dH": ..., "gDrop": ...})
-            if jsonObj["dH"] != nil || jsonObj["gDrop"] != nil {
-                return
-            }
-            
-            // 3. Attempt parsing the final payload into a MesoNoseSample
+            // 4. Attempt parsing the final payload into a MesoNoseSample
             guard let sample = MesoNoseSample(jsonString: text) else {
                 AppLogger.writeLog("⚠️ Failed to parse MesoNoseSample from JSON payload: \(text)")
                 return
@@ -147,7 +154,6 @@ extension BluetoothManager {
             }
             
             // Filter 3b: Filter out MOX heater thermal stabilization spikes (e.g. 8M+ VOC)
-            // High readings are allowed only if part of an active breath evaluation drop delta
             let isTransientWarmupSpike = sample.voc > 2_000_000 && sample.breathDropDelta == 0.0
             guard !isTransientWarmupSpike else {
                 AppLogger.writeLog("🛡️ Ingestion Filter: Rejected MOX sensor thermal stabilization spike [VOC: \(sample.voc)].")
@@ -156,10 +162,10 @@ extension BluetoothManager {
             
             // -------------------------------------------------------------------
             
-            // 4. Save every valid incoming packet directly to SwiftData
+            // 5. Save every valid incoming packet directly to SwiftData
             self.saveMesoNoseToDatabase(sample)
             
-            // 5. Check UI state and update in-memory array for active subscribers
+            // 6. Check UI state and update in-memory array for active subscribers
             let isFinalResult = sample.breathDropDelta > 0.0 || (sample.ptcResult != "NONE" && !sample.ptcResult.isEmpty)
             
             if isFinalResult {
@@ -172,42 +178,7 @@ extension BluetoothManager {
         }
     }
     
-    // Updated countdown timer that strictly waits for firmware state events
-    private func startCountdownTimer(from seconds: Int) {
-        self.countdownTimer?.invalidate()
-        self.countdownTimer = nil
-        
-        self.breathTestState = .warmingUp
-        self.countdownSeconds = seconds
-        self.statusText = "Warming up sensor..."
-        
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] t in
-            guard let self = self else {
-                t.invalidate()
-                return
-            }
-            
-            if self.countdownSeconds > 0 {
-                self.countdownSeconds -= 1
-            } else {
-                t.invalidate()
-                self.countdownTimer = nil
-                
-                if self.breathTestState == .warmingUp {
-                    AppLogger.writeLog("⏱️ Local preheat complete. Transitioning to BLOW NOW...")
-                    self.transitionToBlowNow()
-                }
-            }
-        }
-        
-        RunLoop.main.add(timer, forMode: .common)
-        self.countdownTimer = timer
-    }
-    
     private func transitionToBlowNow() {
-        self.countdownTimer?.invalidate()
-        self.countdownTimer = nil
-        
         self.breathTestState = .blowNow
         self.statusText = "BLOW NOW"
         
@@ -219,7 +190,7 @@ extension BluetoothManager {
         
         AppLogger.writeLog("BLOW NOW active. Starting 10s hardware response timeout guard...")
         
-        self.blowTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { [weak self] _ in
+        self.blowTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: false) { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 
@@ -238,8 +209,8 @@ extension BluetoothManager {
     
     @MainActor
     func handleBreathTestCompletion(didSucceed: Bool) {
-        self.countdownTimer?.invalidate()
-        self.countdownTimer = nil
+        guard self.breathTestState != .completed && self.breathTestState != .timeout else { return }
+        
         self.blowTimeoutTimer?.invalidate()
         self.blowTimeoutTimer = nil
         
@@ -248,15 +219,13 @@ extension BluetoothManager {
         
         AppLogger.writeLog("Breath test finished (\(didSucceed ? "Success" : "Timeout")). Starting 60s active purge...")
         
-        // 1. Force active 3s sampling to heat the sensor and flush residual VOCs faster
-        self.startSampling(mode: .active3s)
+        self.setSamplingMode(mode: .active3s)
         
-        // 2. Revert to configured background mode (e.g., ULP 5m) after 60 seconds of active purging
         DispatchQueue.main.asyncAfter(deadline: .now() + 60.0) { [weak self] in
             guard let self = self else { return }
             if self.breathTestState == .completed || self.breathTestState == .timeout {
                 self.breathTestState = .idle
-                self.startSampling(mode: AppConfig.samplingMode)
+                self.setSamplingMode(mode: AppConfig.samplingMode)
                 AppLogger.writeLog("Post-test purge completed. Reverted to \(AppConfig.samplingMode.rawValue).")
             }
         }
@@ -268,8 +237,18 @@ extension String {
         let trimmed = self.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("{") && trimmed.hasSuffix("}") else { return false }
         
-        return AppConfig.MesoNoseKeys.allDiscriminators.contains { discriminator in
-            trimmed.contains(discriminator)
+        guard let data = trimmed.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
         }
+        
+        // Define all valid keys directly or pull from AppConfig
+        let validKeys: Set<String> = [
+            "temp", "rh", "press", "voc", "ptc_result", "status",
+            "state", "rx_cmd", "dH", "gDrop", "seconds"
+        ]
+        
+        // Return true if the JSON object contains AT LEAST ONE valid key
+        return !json.keys.filter { validKeys.contains($0) }.isEmpty
     }
 }

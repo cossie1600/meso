@@ -28,13 +28,12 @@ struct BreathTestOverlayView: View {
                 VStack(spacing: 12) {
                     ProgressView()
                         .scaleEffect(1.5)
-                    Text("Warming up sensor...")
-                        .font(.subheadline)
+                    
+                    Text(bleManager.statusText)
+                        .font(.headline)
                         .foregroundColor(.secondary)
-                    Text("\(bleManager.countdownSeconds)")
-                        .font(.system(size: 64, weight: .bold, design: .rounded))
-                        .foregroundColor(.orange)
                 }
+                .padding(.vertical, 8)
                 
             case .blowNow:
                 VStack(spacing: 12) {
@@ -61,7 +60,7 @@ struct BreathTestOverlayView: View {
                         .foregroundColor(.teal)
                         .symbolEffect(.variableColor.iterative, options: .repeating)
                     
-                    Text("Analyzing breath sample...")
+                    Text(bleManager.statusText)
                         .font(.headline)
                         .foregroundColor(.teal)
                     

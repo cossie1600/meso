@@ -59,6 +59,9 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     @Published var connectedPeripherals: [UUID: CBPeripheral] = [:]
     @Published var writeCharacteristics: [UUID: CBCharacteristic] = [:]
     
+    // Initial startup burst handle
+    var initialBurstWorkItem: DispatchWorkItem?
+    
     // MARK: - Single-Peripheral Accessors
     var connectedPeripheral: CBPeripheral? {
         connectedPeripherals.values.first
@@ -90,7 +93,6 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
     }
     
-    var countdownTimer: Timer?
     var blowTimeoutTimer: Timer?
     var modelContainer: ModelContainer?
     var centralManager: CBCentralManager?
@@ -109,20 +111,19 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     
     // MARK: - Baseline Ready Evaluator
     var isRoomBaselineReady: Bool {
-        // 1. Ensure a Meso Nose peripheral is actively connected via BLE
         guard mesoNosePeripheral?.state == .connected else { return false }
-        
-        // 2. State & Cooldown checks
         guard breathTestState == .idle else { return false }
         if isCoolingDown { return false }
         
-        // 3. Sensor payload checks
-        guard let latest = mesoNoseSamples.first else { return false }
+        // Find the most recent ambient frame (not a completed breath test frame)
+        guard let latestAmbient = mesoNoseSamples.first(where: { $0.breathDropDelta == 0.0 }) else {
+            return false
+        }
         
-        let validSensors = latest.temp > 0 && latest.humidity > 0 && latest.voc > 0
-        let isUnsaturated = latest.voc > 5000 && latest.voc < 2000000
+        let validSensors = latestAmbient.temp > 0 && latestAmbient.humidity > 0 && latestAmbient.voc > 0
+        let isUnsaturated = latestAmbient.voc > 5000 && latestAmbient.voc < 2000000
         
-        return validSensors && isUnsaturated && latest.breathDropDelta == 0.0
+        return validSensors && isUnsaturated
     }
     
     var cooldownRemainingSeconds: TimeInterval {
@@ -142,7 +143,6 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         } else {
             do {
                 let config = ModelConfiguration(isStoredInMemoryOnly: true)
-                // Register both model schemas explicitly to avoid launch crashes
                 self.modelContainer = try ModelContainer(for: DB_PMSample.self, DB_MesoNoseSample.self, configurations: config)
                 AppLogger.writeLog("In-Memory Test Database Container Initialized.")
             } catch {
@@ -177,14 +177,18 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
 #endif
         }
         
-        // Defer database hydration after initial window hierarchy load to prevent launch crashes
         Task { @MainActor in
             self.fetchHistoricalMesoNoseData()
         }
     }
     
+    func cancelInitialBurstTimer() {
+        initialBurstWorkItem?.cancel()
+        initialBurstWorkItem = nil
+    }
+    
     // MARK: - Sampling Control
-    func startSampling(mode: SamplingMode = AppConfig.samplingMode) {
+    func setSamplingMode(mode: SamplingMode = AppConfig.samplingMode) {
         AppConfig.samplingMode = mode
         DispatchQueue.main.async {
             self.currentSamplingMode = mode
@@ -198,13 +202,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             case .active3s:
                 sendMesoNoseCommand(.setActiveSamplingMode)
             case .ulp5m:
-                // 1. First ensure the sampling engine is running
-                sendMesoNoseCommand(.startActiveSampling)
-                
-                // 2. Safely transition to ULP power configuration after handshake
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.sendMesoNoseCommand(.setUltraLowSamplingMode)
-                }
+                sendMesoNoseCommand(.setUltraLowSamplingMode)
             case .stopped:
                 sendMesoNoseCommand(.stopSampling)
             }
@@ -392,19 +390,25 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 guard let self = self else { return }
                 
-                AppLogger.writeLog("Handshake Complete: Forcing 60s Active Warmup prior to configured mode...")
+                AppLogger.writeLog("Handshake Established: Triggering 15s initial sampling burst for valid baseline...")
                 
-                // 1. Force Active 3s sampling immediately to stabilize baseline
-                self.startSampling(mode: .active3s)
+                self.sendMesoNoseCommand(.setActiveSamplingMode)
+                self.cancelInitialBurstTimer()
                 
-                // 2. If configured for ULP, defer the ULP transition by 60 seconds
-                if AppConfig.samplingMode == .ulp5m {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 60.0) { [weak self] in
-                        guard let self = self, self.mesoNosePeripheral?.state == .connected else { return }
-                        AppLogger.writeLog("60s Warmup Complete. Stepping down to Ultra Low Power (5m)...")
-                        self.startSampling(mode: .ulp5m)
+                let workItem = DispatchWorkItem { [weak self] in
+                    guard let self = self, self.mesoNosePeripheral?.state == .connected else { return }
+                    guard self.breathTestState == .idle else {
+                        AppLogger.writeLog("Initial burst complete, but breath test is active. Skipping background mode override.")
+                        return
                     }
+                    
+                    let targetMode = AppConfig.samplingMode
+                    AppLogger.writeLog("Initial burst capture complete. Transitioning to configured mode: \(targetMode.rawValue)")
+                    self.setSamplingMode(mode: targetMode)
                 }
+                
+                self.initialBurstWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + 15.0, execute: workItem)
             }
         }
     }
@@ -439,12 +443,18 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
                 continue
             }
             
-            if line.isMesoNosePayload {
-                AppLogger.writeLog("Ingestion: Meso Nose payload -> \(line)")
-                handleMesoNosePacket(line)
-                continue
+            // 🛡️ FIRST GUARD: Route all JSON immediately to Meso Nose parser
+            if line.hasPrefix("{") {
+                if line.isMesoNosePayload {
+                    AppLogger.writeLog("Ingestion: Meso Nose payload -> \(line)")
+                    handleMesoNosePacket(line)
+                } else {
+                    AppLogger.writeLog("⚠️ Unrecognized JSON payload skipped: \(line)")
+                }
+                continue // 👈 MUST continue so execution NEVER reaches parseMesoPinPacket
             }
             
+            // Only plain text/CSV lines reach the PM sensor parser
             parseMesoPinPacket(line)
         }
         
