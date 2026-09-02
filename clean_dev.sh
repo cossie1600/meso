@@ -1,4 +1,3 @@
-cat << 'EOF' > ~/clean_dev.sh
 #!/bin/bash
 
 echo "🧹 Starting macOS Developer & System Cleanup..."
@@ -11,10 +10,10 @@ if [ -d ~/Library/Developer/Xcode/DerivedData ]; then
 fi
 
 # 2. Clear iOS Simulator Devices & Runtimes
-echo "📱 Erasing iOS Simulators..."
-xcrun simctl erase all 2>/dev/null
-xcrun simctl runtime delete all 2>/dev/null
-rm -rf ~/Library/Developer/CoreSimulator/Devices/* 2>/dev/null
+# echo "📱 Erasing iOS Simulators..."
+# xcrun simctl erase all 2>/dev/null
+# xcrun simctl runtime delete all 2>/dev/null
+# rm -rf ~/Library/Developer/CoreSimulator/Devices/* 2>/dev/null
 
 # 3. Clear CocoaPods, Swift Package Manager & Conda Caches
 echo "📦 Clearing Package Manager Caches..."
@@ -42,4 +41,3 @@ mkdir -p ~/.sideloadly ~/Library/Application\ Support/sideloadly
 echo "------------------------------------------------"
 echo "✅ Cleanup Complete! Current Available Space:"
 df -h / | awk 'NR==2 {print $4}'
-EOF

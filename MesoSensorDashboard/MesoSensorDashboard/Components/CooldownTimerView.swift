@@ -13,21 +13,21 @@ struct CooldownTimerView: View {
         TimelineView(.periodic(from: .now, by: 1.0)) { context in
             let remaining = remainingSeconds(at: context.date)
             
-            if remaining > 0 {
-                HStack(spacing: 8) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.subheadline)
-                    Text("Sensor Recovering: \(formattedTime(remaining))")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .monospacedDigit()
-                }
-                .foregroundColor(.orange)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.orange.opacity(0.12))
-                .clipShape(Capsule())
-            }
+//            if remaining > 0 {
+//                HStack(spacing: 8) {
+//                    Image(systemName: "clock.arrow.circlepath")
+//                        .font(.subheadline)
+//                    Text("Sensor Recovering: \(formattedTime(remaining))")
+//                        .font(.subheadline)
+//                        .fontWeight(.semibold)
+//                        .monospacedDigit()
+//                }
+//                .foregroundColor(.orange)
+//                .padding(.horizontal, 12)
+//                .padding(.vertical, 8)
+//                .background(Color.orange.opacity(0.12))
+//                .clipShape(Capsule())
+//            }
         }
     }
     

@@ -8,21 +8,36 @@ import CoreBluetooth
 import Combine
 import SwiftData
 
-enum BreathTestState: Equatable {
+// Explicitly marked Sendable and nonisolated to conform to Swift 6 strict concurrency rules
+enum BreathTestState: Equatable, Sendable {
     case idle
     case warmingUp
     case blowNow
     case processing
     case completed
     case timeout
+    
+    nonisolated static func == (lhs: BreathTestState, rhs: BreathTestState) -> Bool {
+        switch (lhs, rhs) {
+        case (.idle, .idle),
+             (.warmingUp, .warmingUp),
+             (.blowNow, .blowNow),
+             (.processing, .processing),
+             (.completed, .completed),
+             (.timeout, .timeout):
+            return true
+        default:
+            return false
+        }
+    }
 }
 
-enum ConnectionStrategy {
+enum ConnectionStrategy: Sendable {
     case batterySaver // 15-minute intervals
     case emergency    // 1-minute tracking interval
 }
 
-enum AlertVisualTheme {
+enum AlertVisualTheme: Sendable {
     case none
     case fineParticulates  // Smog/Smoke (Blue)
     case allergenProfile   // Pollen/Dust signature (Teal)
@@ -75,7 +90,8 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
     }
     
-    var mockDataTimer: Timer?
+    var countdownTimer: Timer?
+    var blowTimeoutTimer: Timer?
     var modelContainer: ModelContainer?
     var centralManager: CBCentralManager?
     
@@ -93,13 +109,18 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     
     // MARK: - Baseline Ready Evaluator
     var isRoomBaselineReady: Bool {
+        // 1. Ensure a Meso Nose peripheral is actively connected via BLE
+        guard mesoNosePeripheral?.state == .connected else { return false }
+        
+        // 2. State & Cooldown checks
         guard breathTestState == .idle else { return false }
         if isCoolingDown { return false }
         
+        // 3. Sensor payload checks
         guard let latest = mesoNoseSamples.first else { return false }
         
         let validSensors = latest.temp > 0 && latest.humidity > 0 && latest.voc > 0
-        let isUnsaturated = latest.voc > 5000 && latest.voc < 50000
+        let isUnsaturated = latest.voc > 5000 && latest.voc < 2000000
         
         return validSensors && isUnsaturated && latest.breathDropDelta == 0.0
     }
@@ -162,7 +183,6 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
     }
     
-    // MARK: - Sampling Control
     // MARK: - Sampling Control
     func startSampling(mode: SamplingMode = AppConfig.samplingMode) {
         AppConfig.samplingMode = mode
@@ -370,8 +390,21 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         
         if characteristic.isNotifying && peripheral.name?.hasPrefix(AppConfig.mesoNoseBluetoothName) == true {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                AppLogger.writeLog("Handshake Complete: Sending initial configured sampling command to Meso Nose...")
-                self?.startSampling()
+                guard let self = self else { return }
+                
+                AppLogger.writeLog("Handshake Complete: Forcing 60s Active Warmup prior to configured mode...")
+                
+                // 1. Force Active 3s sampling immediately to stabilize baseline
+                self.startSampling(mode: .active3s)
+                
+                // 2. If configured for ULP, defer the ULP transition by 60 seconds
+                if AppConfig.samplingMode == .ulp5m {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 60.0) { [weak self] in
+                        guard let self = self, self.mesoNosePeripheral?.state == .connected else { return }
+                        AppLogger.writeLog("60s Warmup Complete. Stepping down to Ultra Low Power (5m)...")
+                        self.startSampling(mode: .ulp5m)
+                    }
+                }
             }
         }
     }

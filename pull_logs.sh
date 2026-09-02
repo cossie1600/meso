@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BUNDLE_ID="com.cg.MesoSensorDashboard.TWZ7662V9L"
+BUNDLE_ID="com.cg.MesoSensorDashboard.32SKC6LW32"
 DEVICE_UUID="0A328CF2-996F-5C4A-BA30-079DBEF51232"
 LOG_FILENAME="meso_sensor_log.txt"
 DESTINATION_PATH="$HOME/Downloads/$LOG_FILENAME"

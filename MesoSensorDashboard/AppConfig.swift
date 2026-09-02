@@ -62,6 +62,7 @@ struct AppConfig {
     // 🚨 Air Quality Spike Thresholds
     static let pm25AlertThreshold: Double = 35.0
     static let pm10AlertThreshold: Double = 75.0
+    static let vocWarmupSpikeThreshold: Double = 2_000_000.0 // 👈 Added for MOX spike filter
     
     static let coarseParticleAlertThreshold: Double = 0.70
     static let ultraFineParticleAlertThreshold: Double = 5.0
@@ -92,13 +93,14 @@ struct AppConfig {
     // 🔑 BME688 JSON Payload Discriminators
     enum MesoNoseKeys {
         static let temp = "\"temp\""
+        static let press = "\"press\""       // 👈 Added pressure discriminator
         static let voc = "\"voc\""
         static let ptcResult = "\"ptc_result\""
-        static let status = "status"
-        static let state = "state"
+        static let status = "\"status\""     // 👈 Quoted status
+        static let state = "\"state\""       // 👈 Quoted state
             
         static var allDiscriminators: [String] {
-            [temp, voc, ptcResult]
+            [temp, press, voc, ptcResult, status, state] // 👈 Updated full list
         }
     }
     

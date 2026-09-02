@@ -94,7 +94,7 @@ private struct DashboardMainView: View {
                 }
                 .padding(.horizontal)
             }
-            .navigationTitle("Meso Dashboard")
+            //.navigationTitle("Meso Dashboard")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { isShowingSettings = true }) {
@@ -161,7 +161,7 @@ private struct MesoNoseSectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: AppConfig.DashboardUI.cardSpacing) {
             HStack {
-                Label("Meso Nose Telemetry", systemImage: "wind")
+                Label("", systemImage: "wind")
                     .font(.headline)
                 Spacer()
                 
@@ -182,6 +182,39 @@ private struct MesoNoseSectionView: View {
                 .clipShape(Capsule())
                 
                 PtcBadgeView(result: result)
+            }
+            
+            // 🕒 Cooldown Pill Component
+            if bleManager.isCoolingDown {
+                CooldownTimerView(lastTestDate: bleManager.lastTestCompletedDate)
+                    .padding(.vertical, 2)
+            }
+            
+            // 🟡 Status Banner: Baseline Warmup & Stabilization Cue
+            if !bleManager.isRoomBaselineReady && bleManager.breathTestState == .idle {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.orange)
+                    
+                    if bleManager.isCoolingDown {
+                        Text("Sensor Purging: \(Int(bleManager.cooldownRemainingSeconds))s remaining")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.orange)
+                    } else {
+                        Text("Stabilizing Sensor Baseline... Please wait")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(.orange)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.12))
+                .cornerRadius(8)
+                .padding(.vertical, 2)
             }
             
             if bleManager.breathTestState != .idle {

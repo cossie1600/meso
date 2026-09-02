@@ -46,7 +46,7 @@ struct SettingsView: View {
                         HStack {
                             Spacer()
                             Image(systemName: "play.fill")
-                            Text("Start Sampling")
+                            Text("Set Sampling Mode")
                                 .bold()
                             Spacer()
                         }
