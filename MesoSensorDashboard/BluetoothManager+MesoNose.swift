@@ -154,7 +154,9 @@ extension BluetoothManager {
             }
             
             // Filter 3b: Filter out MOX heater thermal stabilization spikes (e.g. 8M+ VOC)
-            let isTransientWarmupSpike = sample.voc > 2_000_000 && sample.breathDropDelta == 0.0
+            let hasValidBreathResult = sample.breathDropDelta > 0.0 || (sample.ptcResult != "NONE" && !sample.ptcResult.isEmpty)
+            let isTransientWarmupSpike = sample.voc > 2_000_000 && !hasValidBreathResult
+
             guard !isTransientWarmupSpike else {
                 AppLogger.writeLog("🛡️ Ingestion Filter: Rejected MOX sensor thermal stabilization spike [VOC: \(sample.voc)].")
                 return

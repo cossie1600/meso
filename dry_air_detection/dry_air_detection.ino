@@ -21,7 +21,7 @@ String Device_Name = "Meso Nose";
 // -------------------------------------------------------------------
 constexpr uint32_t SERIAL_BAUD_RATE            = 115200; 
 constexpr uint32_t I2C_CLOCK_SPEED_HZ          = 100000; 
-constexpr float PRESSURE_HPA_DIVISOR           = 100.0f; 
+constexpr float PRESSURE_HPA_DIVISOR           = 1.0f;   // Native hPa output (1.0f divisor)
 constexpr uint32_t CPU_LOW_POWER_FREQ_MHZ      = 80;     
 
 // Hardware Initialization Delays
@@ -40,7 +40,7 @@ constexpr uint32_t WARMUP_LONG_DELAY_MS       = 15000;  // 15 seconds sensor the
 constexpr uint32_t BREATH_WAIT_TIMEOUT_MS     = 10000;  // 10 seconds to wait for blow start
 constexpr uint32_t BREATH_SENSING_WINDOW_MS   = 3500;   // 3.5 seconds to capture minimum VOC nadir
 constexpr uint32_t LOOP_TICK_DELAY_MS         = 20;     
-constexpr uint32_t POLL_TICK_DELAY_MS         = 50;     
+constexpr uint32_t POLL_TICK_DELAY_MS         = 20;     
 
 // BLE Advertising Timing Units
 constexpr uint16_t BLE_ADV_MIN_INTERVAL       = 160;    
@@ -67,7 +67,7 @@ volatile bool pendingBreathCommand = false;
 
 struct SensorData {
   float currentTemp = 0.0f;
-  float currentHumidity = 0.0f;
+  float currentHumidity = 0.0f; // Raw humidity used for ultra-fast transient detection
   float currentPressure = 0.0f;
   float currentGasRes = 0.0f;
   float deltaDrop = 0.0f;
@@ -115,19 +115,20 @@ void logMessage(String msg) {
   Serial.flush();
 #endif
   if (deviceConnected && pCharacteristic) {
-    String bleLog = "[LOG]: " + msg;
+    String bleLog = "[LOG]: " + msg + "\n";
     pCharacteristic->setValue((uint8_t*)bleLog.c_str(), bleLog.length());
     pCharacteristic->notify();
   }
 }
 
 void sendBleMessage(String msg) {
+  String formattedMsg = msg + "\n"; // Appended newline delimiter for immediate Swift ingestion
 #if ENABLE_SERIAL_LOGS
-  Serial.println("[BLE OUT]: " + msg);
+  Serial.print("[BLE OUT]: " + formattedMsg);
   Serial.flush();
 #endif
   if (deviceConnected && pCharacteristic) {
-    pCharacteristic->setValue((uint8_t*)msg.c_str(), msg.length());
+    pCharacteristic->setValue((uint8_t*)formattedMsg.c_str(), formattedMsg.length());
     pCharacteristic->notify();
   }
 }
@@ -148,6 +149,9 @@ void setBsecProfile(BsecProfile profile) {
     bsec.updateSubscription(sensorList, numSensors, BSEC_SAMPLE_RATE_LP);
     sendBleMessage("{\"state\":\"PROFILE_LP\"}");
   }
+  
+  // Yield to allow NimBLE task to transmit the state transition packet
+  vTaskDelay(pdMS_TO_TICKS(50));
 }
 
 void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsec) {
@@ -162,22 +166,22 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
         }
         break;
       case BSEC_OUTPUT_RAW_TEMPERATURE:
-        if (output.signal == 0.0f) {
-          sensorData.currentHumidity = output.signal;
-        }
-        break;
-      case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:
-        sensorData.currentHumidity = output.signal;        
         break;
       case BSEC_OUTPUT_RAW_HUMIDITY:
-        if (sensorData.currentHumidity == 0.0f) sensorData.currentHumidity = output.signal;
+        // Raw humidity preferred for fast breath spike detection without EMA delay
+        sensorData.currentHumidity = output.signal;
+        break;
+      case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:
+        if (sensorData.currentHumidity == 0.0f) {
+          sensorData.currentHumidity = output.signal;
+        }
         break;
       case BSEC_OUTPUT_RAW_PRESSURE:
         sensorData.currentPressure = output.signal / PRESSURE_HPA_DIVISOR;
         break;
       case BSEC_OUTPUT_RAW_GAS:
         sensorData.currentGasRes = output.signal;
-        newGasDataAvailable = true;
+        newGasDataAvailable = true; // Signals fresh physical read
         break;
     }
   }
@@ -322,18 +326,17 @@ void runBreathSequence() {
   dryAirActive = false;
   currentMode = MODE_BREATH_TEST;
 
-  // Warmup BSEC heater for 4 seconds with RTOS yield if profile is 3s, 
-  // 15 seconds if profile is 30
   uint32_t warmTime = (currentProfile == PROFILE_LP_3S) ? WARMUP_SHORT_DELAY_MS : WARMUP_LONG_DELAY_MS;
   setBsecProfile(PROFILE_LP_3S);
 
   sendBleMessage("{\"status\":\"BREATH_TEST_STARTED\"}");
   sendBleMessage("{\"state\":\"WARMING_UP\",\"seconds\":" + String(warmTime / 1000) + "}");
+  vTaskDelay(pdMS_TO_TICKS(100)); // Yield to push BLE notifications
     
   uint32_t warmupStart = millis();
   while (millis() - warmupStart < warmTime) {
     bsec.run();
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
 
   float baseRes = 0.0f;
@@ -343,6 +346,7 @@ void runBreathSequence() {
 
   if (!userBreathTaken) {
     sendBleMessage("{\"state\":\"TIMEOUT\"}");
+    vTaskDelay(pdMS_TO_TICKS(100));
   } else {
     float deltaDrop = 0.0f;
     if (baseRes > 0.0f) {
@@ -354,7 +358,10 @@ void runBreathSequence() {
     sensorData.rBreathMin = (long)minRes;
     sensorData.ptcResult = eval_breath_result(deltaDrop);
     
+    // Send completion status token followed by single final payload
+    sendBleMessage("{\"status\":\"BREATH_TEST_COMPLETE\"}");
     sendBleMessage(sensorData.toJsonString());
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 
   setBsecProfile(PROFILE_ULP_300S);
@@ -391,51 +398,58 @@ void loop() {
 bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes) {
   if (!bsecReady) return false;
 
-  // 1. Force BSEC execution until fresh sample updates sensorData
+  // 1. Force clear flag and wait for a FRESH post-warmup BSEC sample cycle
   newGasDataAvailable = false;
   uint32_t baselineTimeout = millis();
-  while (!newGasDataAvailable && (millis() - baselineTimeout < 3500UL)) {
+  while (!newGasDataAvailable && (millis() - baselineTimeout < 4000UL)) {
     bsec.run();
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
 
-  // 2. Capture baseline snapshot AFTER fresh reading
+  // 2. Capture baseline snapshot AFTER fresh BSEC output
   float baseHumidity = sensorData.currentHumidity;
   float baseGasRes   = sensorData.currentGasRes;
   outBaselineRes     = baseGasRes;
+  outMinRes          = baseGasRes;
 
+  // 3. Send READY_PLEASE_BLOW and yield for BLE transmission
   sendBleMessage("{\"state\":\"READY_PLEASE_BLOW\"}");
+  vTaskDelay(pdMS_TO_TICKS(100)); 
 
   uint32_t startMs = millis();
-  uint32_t lastPrint = 0;
   bool detected = false;
 
   newGasDataAvailable = false;
 
-  // 3. 10-Second Wait Window for Blow Start
+  // 4. 10-Second Wait Window for Blow Start
   while ((millis() - startMs) < BREATH_WAIT_TIMEOUT_MS) {
     bsec.run();
 
-    float deltaHumidity = sensorData.currentHumidity - baseHumidity;
-    float gasDropPct = 0.0f;
-    
-    if (baseGasRes > 0.0f && sensorData.currentGasRes > 0.0f) {
-      gasDropPct = ((baseGasRes - sensorData.currentGasRes) / baseGasRes) * 100.0f;
-    }
+    // Process logic on FRESH BSEC output ONLY
+    if (newGasDataAvailable) {
+      newGasDataAvailable = false;
 
-    // Stream status update every 1 second
-    if (millis() - lastPrint >= 1000UL) {
-      lastPrint = millis();
+      float deltaHumidity = sensorData.currentHumidity - baseHumidity;
+      float gasDropPct = 0.0f;
+      
+      if (baseGasRes > 0.0f && sensorData.currentGasRes > 0.0f) {
+        gasDropPct = ((baseGasRes - sensorData.currentGasRes) / baseGasRes) * 100.0f;
+      }
+
+      if (sensorData.currentGasRes > 0.0f && sensorData.currentGasRes < outMinRes) {
+        outMinRes = sensorData.currentGasRes;
+      }
+
+      // Stream debug telemetry synchronously on new data arrival
       String debugMsg = "{\"dH\":" + String(deltaHumidity, 1) + 
                         ",\"gDrop\":" + String(gasDropPct, 1) + "}";
       sendBleMessage(debugMsg);
-    }
 
-    // Trigger condition: Human breath moisture spike (+0.3% RH) or Gas resistance drop (+0.8%)
-    if (deltaHumidity >= 0.3f || gasDropPct >= 0.8f) {
-      detected = true;
-      outMinRes = sensorData.currentGasRes;
-      break;
+      // Trigger condition: Breath moisture spike (+0.3% RH) OR Gas resistance drop (+0.8%)
+      if (deltaHumidity >= 0.3f || gasDropPct >= 0.8f) {
+        detected = true;
+        break;
+      }
     }
 
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
@@ -445,8 +459,9 @@ bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes) {
     return false;
   }
 
-  // 4. Blow detected! Transition UI to processing and capture VOC nadir
+  // 5. Blow detected! Notify UI and capture minimum VOC nadir over 3.5s
   sendBleMessage("{\"state\":\"TESTING_SENSING_BREATH\"}");
+  vTaskDelay(pdMS_TO_TICKS(50));
 
   uint32_t blowWindowStart = millis();
   newGasDataAvailable = false;
@@ -454,10 +469,10 @@ bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes) {
   while (millis() - blowWindowStart < BREATH_SENSING_WINDOW_MS) {
     bsec.run();
     if (newGasDataAvailable) {
+      newGasDataAvailable = false;
       if (sensorData.currentGasRes > 0.0f && sensorData.currentGasRes < outMinRes) {
         outMinRes = sensorData.currentGasRes; 
       }
-      newGasDataAvailable = false;
     }
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
