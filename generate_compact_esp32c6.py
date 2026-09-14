@@ -1,5 +1,4 @@
 import os
-import sys
 import pcbnew
 
 def mm(val):
@@ -10,7 +9,7 @@ def make_point(x, y):
         return pcbnew.VECTOR2I(int(x), int(y))
     return pcbnew.wxPoint(int(x), int(y))
 
-# 1. Bind to Active Board & Clear Canvas
+# 1. Initialize Board & Wipe Canvas
 board = pcbnew.GetBoard() if pcbnew.GetBoard() else pcbnew.BOARD()
 
 for item in list(board.GetFootprints()):
@@ -18,11 +17,12 @@ for item in list(board.GetFootprints()):
 for item in list(board.GetDrawings()):
     board.Remove(item)
 
-# 2. Board Dimensions (23.0 mm x 21.0 mm)
+# 2. Board Dimensions: Compact 23mm x 21mm
 center_x, center_y = mm(100), mm(100)
 board_w, board_h = mm(23.0), mm(21.0)
-
 half_w, half_h = board_w / 2, board_h / 2
+
+# Draw Edge Cuts Outline
 pts = [
     (center_x - half_w, center_y - half_h),
     (center_x + half_w, center_y - half_h),
@@ -38,86 +38,116 @@ for i in range(4):
     seg.SetWidth(mm(0.1))
     board.Add(seg)
 
-# 3. Detect System KiCad Footprint Library Directory
-mac_path = "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints"
-win_path = "C:/Program Files/KiCad/8.0/share/kicad/footprints"
-linux_path = "/usr/share/kicad/footprints"
-
-kicad_fp_dir = ""
-for p in [mac_path, win_path, linux_path]:
-    if os.path.exists(p):
-        kicad_fp_dir = p
-        break
-
-def load_official_footprint(lib_folder, fp_name, ref, val, pos_x, pos_y, rotation_deg=0):
-    full_lib_path = os.path.join(kicad_fp_dir, f"{lib_folder}.pretty")
-    
-    if os.path.exists(full_lib_path):
-        fp = pcbnew.FootprintLoad(full_lib_path, fp_name)
-    else:
-        fp = None
-
-    # Fallback to direct library search if path resolution differs
-    if not fp:
-        try:
-            fp = pcbnew.FootprintLoad("", f"{lib_folder}:{fp_name}")
-        except Exception:
-            fp = None
-
-    if not fp:
-        print(f"Warning: Could not load {lib_folder}:{fp_name}")
-        return None
-
+# Footprint Builder Helper
+def build_custom_footprint(ref, value, pads_config, silk_box=None, is_bottom=False):
+    fp = pcbnew.FOOTPRINT(board)
     fp.SetReference(ref)
-    fp.SetValue(val)
-    fp.SetPosition(make_point(pos_x, pos_y))
-    if rotation_deg != 0:
-        fp.SetOrientation(pcbnew.EDA_ANGLE(rotation_deg, pcbnew.DEGREES_T))
-    board.Add(fp)
+    fp.SetValue(value)
+    layer = pcbnew.B_Cu if is_bottom else pcbnew.F_Cu
+    silk_layer = pcbnew.B_SilkS if is_bottom else pcbnew.F_SilkS
+
+    # Add Pads
+    for pad_num, pos_x, pos_y, size_x, size_y, shape, attr, net_name in pads_config:
+        pad = pcbnew.PAD(fp)
+        pad.SetNumber(str(pad_num))
+        pad.SetShape(shape)
+        pad.SetAttribute(attr)
+        pad.SetLayer(layer)
+        pad.SetPosition(make_point(pos_x, pos_y))
+        pad.SetSize(make_point(size_x, size_y))
+        
+        if net_name:
+            net = board.FindNet(net_name)
+            if not net:
+                net = pcbnew.NETINFO_ITEM(board, net_name)
+                board.Add(net)
+            pad.SetNet(net)
+            
+        fp.Add(pad)
+
+    # Add Silkscreen Outline for 3D Visualizer
+    if silk_box:
+        sx, sy, sw, sh = silk_box
+        box_pts = [
+            (sx - sw/2, sy - sh/2), (sx + sw/2, sy - sh/2),
+            (sx + sw/2, sy + sh/2), (sx - sw/2, sy + sh/2)
+        ]
+        for i in range(4):
+            line = pcbnew.PCB_SHAPE(fp)
+            line.SetShape(pcbnew.S_SEGMENT)
+            line.SetLayer(silk_layer)
+            line.SetStart(make_point(box_pts[i][0], box_pts[i][1]))
+            line.SetEnd(make_point(box_pts[(i + 1) % 4][0], box_pts[(i + 1) % 4][1]))
+            line.SetWidth(mm(0.12))
+            fp.Add(line)
+
     return fp
 
+SMD = pcbnew.PAD_ATTRIB_SMD
+PTH = pcbnew.PAD_ATTRIB_PTH
+RECT = pcbnew.PAD_SHAPE_RECT
+CIRCLE = pcbnew.PAD_SHAPE_CIRCLE
+
 # -------------------------------------------------------------
-# Footprint Loading
+# 1. ESP32-C6-MINI-1 Module (Center-Right, Top Side)
 # -------------------------------------------------------------
-# 1. USB-C Connector (Left Edge)
-load_official_footprint(
-    "Connector_USB", "USB_C_Receptacle_GNS_TYPE-C-16P", 
-    "J1", "USB_C", 
-    center_x - half_w + mm(4.0), center_y - mm(4.0), 
-    rotation_deg=90
-)
+esp_cx, esp_cy = center_x + mm(3.0), center_y
+esp_pads = []
+for i in range(9):
+    esp_pads.append((i + 1, esp_cx - mm(6.6), esp_cy - mm(5.0) + mm(1.25 * i), mm(1.2), mm(0.7), RECT, SMD, f"ESP_{i+1}"))
+for i in range(9):
+    esp_pads.append((18 - i, esp_cx + mm(6.6), esp_cy - mm(5.0) + mm(1.25 * i), mm(1.2), mm(0.7), RECT, SMD, f"ESP_{18-i}"))
 
-# 2. JST-PH 2-Pin Battery Connector (Top-Left Edge)
-load_official_footprint(
-    "Connector_JST", "JST_PH_S2B-PH-SM4-TB_1x02-1MP_P2.00mm_Horizontal", 
-    "J2", "LiPo_Bat", 
-    center_x - mm(6.0), center_y - mm(6.5), 
-    rotation_deg=0
-)
+board.Add(build_custom_footprint("U1", "ESP32-C6-MINI-1", esp_pads, silk_box=(esp_cx, esp_cy, mm(13.2), mm(16.6))))
 
-# 3. Qwiic Connector (Bottom Edge)
-load_official_footprint(
-    "Connector_JST", "JST_SH_BM04B-SRSS-TB_1x04-1MP_P1.00mm_Horizontal", 
-    "J3", "Qwiic", 
-    center_x, center_y + half_h - mm(2.5), 
-    rotation_deg=180
-)
+# -------------------------------------------------------------
+# 2. USB Type-C Connector (Top-Left Edge, Top Side)
+# -------------------------------------------------------------
+usb_cx, usb_cy = center_x - half_w + mm(3.5), center_y - mm(5.0)
+usb_pads = [
+    (1, usb_cx - mm(0.5), usb_cy - mm(1.6), mm(0.4), mm(1.2), RECT, SMD, "GND"),
+    (2, usb_cx - mm(0.5), usb_cy - mm(1.0), mm(0.4), mm(1.2), RECT, SMD, "VBUS"),
+    (3, usb_cx - mm(0.5), usb_cy - mm(0.35), mm(0.4), mm(1.2), RECT, SMD, "USB_DN"),
+    (4, usb_cx - mm(0.5), usb_cy + mm(0.35), mm(0.4), mm(1.2), RECT, SMD, "USB_DP"),
+    (5, usb_cx - mm(0.5), usb_cy + mm(1.0), mm(0.4), mm(1.2), RECT, SMD, "VBUS"),
+    (6, usb_cx - mm(0.5), usb_cy + mm(1.6), mm(0.4), mm(1.2), RECT, SMD, "GND")
+]
+board.Add(build_custom_footprint("J1", "USB_C", usb_pads, silk_box=(usb_cx, usb_cy, mm(7.0), mm(5.0))))
 
-# 4. MCP73831 Charger IC (SOT-23-5)
-load_official_footprint(
-    "Package_TO_SOT_SMD", "SOT-23-5", 
-    "U2", "MCP73831", 
-    center_x - mm(6.0), center_y + mm(2.0), 
-    rotation_deg=0
-)
+# -------------------------------------------------------------
+# 3. MCP73831 Charger IC (Middle-Left, Top Side)
+# -------------------------------------------------------------
+mcp_cx, mcp_cy = center_x - mm(6.5), center_y + mm(1.5)
+mcp_pads = [
+    (1, mcp_cx - mm(0.95), mcp_cy + mm(1.1), mm(0.5), mm(0.8), RECT, SMD, "STAT"),
+    (2, mcp_cx, mcp_cy + mm(1.1), mm(0.5), mm(0.8), RECT, SMD, "GND"),
+    (3, mcp_cx + mm(0.95), mcp_cy + mm(1.1), mm(0.5), mm(0.8), RECT, SMD, "VBAT"),
+    (4, mcp_cx + mm(0.95), mcp_cy - mm(1.1), mm(0.5), mm(0.8), RECT, SMD, "VBUS"),
+    (5, mcp_cx - mm(0.95), mcp_cy - mm(1.1), mm(0.5), mm(0.8), RECT, SMD, "PROG")
+]
+board.Add(build_custom_footprint("U2", "MCP73831", mcp_pads, silk_box=(mcp_cx, mcp_cy, mm(3.0), mm(3.0))))
 
-# 5. ESP32-C6-MINI-1 Module (Right Side)
-load_official_footprint(
-    "RF_Module", "ESP32-C6-MINI-1", 
-    "U1", "ESP32-C6-MINI-1", 
-    center_x + mm(3.0), center_y, 
-    rotation_deg=0
-)
+# -------------------------------------------------------------
+# 4. JST-PH 2-Pin Battery Connector (Bottom-Left, Top Side)
+# -------------------------------------------------------------
+jst_cx, jst_cy = center_x - mm(6.5), center_y + mm(7.0)
+jst_pads = [
+    (1, jst_cx - mm(1.0), jst_cy, mm(1.4), mm(1.4), CIRCLE, PTH, "VBAT"),
+    (2, jst_cx + mm(1.0), jst_cy, mm(1.4), mm(1.4), CIRCLE, PTH, "GND")
+]
+board.Add(build_custom_footprint("J2", "JST_PH_LiPo", jst_pads, silk_box=(jst_cx, jst_cy, mm(6.0), mm(4.5))))
+
+# -------------------------------------------------------------
+# 5. Qwiic / STEMMA QT Connector (Bottom Edge, Bottom Side)
+# -------------------------------------------------------------
+qwiic_cx, qwiic_cy = center_x + mm(3.0), center_y + half_h - mm(2.0)
+qwiic_pads = [
+    (1, qwiic_cx - mm(1.5), qwiic_cy, mm(0.5), mm(1.0), RECT, SMD, "GND"),
+    (2, qwiic_cx - mm(0.5), qwiic_cy, mm(0.5), mm(1.0), RECT, SMD, "3V3"),
+    (3, qwiic_cx + mm(0.5), qwiic_cy, mm(0.5), mm(1.0), RECT, SMD, "SDA"),
+    (4, qwiic_cx + mm(1.5), qwiic_cy, mm(0.5), mm(1.0), RECT, SMD, "SCL")
+]
+board.Add(build_custom_footprint("J3", "Qwiic_Connector", qwiic_pads, silk_box=(qwiic_cx, qwiic_cy, mm(5.5), mm(3.5)), is_bottom=True))
 
 pcbnew.Refresh()
 
@@ -127,4 +157,4 @@ os.makedirs(output_dir, exist_ok=True)
 save_path = os.path.join(output_dir, "ESP32_C6_Compact_3D.kicad_pcb")
 pcbnew.SaveBoard(save_path, board)
 
-print(f"Successfully generated 3D board at: {save_path}")
+print(f"Board refreshed! All 5 components locked in place: {save_path}")
