@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "Qwiic_Pocket_Dev_ESP32_C6-import-fps") (type "KiCad") (uri "${KIPRJMOD}/Qwiic_Pocket_Dev_ESP32_C6-import-fps.pretty") (options "kicad_import_cache=1") (descr ""))
+)
