@@ -1,5 +1,0 @@
-(version 1)
-
-(rule "Override Imported Eagle Clearances"
-   (constraint clearance (min 0.127mm))
-   (condition "A.Type == 'track' || A.Type == 'via' || A.Type == 'pad'"))

@@ -13,4 +13,5 @@ _autosave-*
 *.gbr
 *.gbrjob
 *.drl
+*.history
 *.zip
