@@ -302,7 +302,7 @@
       "netlist": "../../BME688_Daughterboard.net",
       "plot": "",
       "specctra_dsn": "",
-      "step": "",
+      "step": "BME688_Daughterboard.step",
       "vrml": ""
     },
     "page_layout_descr_file": ""
