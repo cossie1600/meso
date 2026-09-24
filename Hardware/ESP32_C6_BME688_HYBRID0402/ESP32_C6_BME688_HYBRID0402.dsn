@@ -1,4 +1,4 @@
-(pcb /Users/tmai/meso/Hardware/ESP32_C6_BME688_HYBRID0402.dsn
+(pcb /Users/tmai/meso/Hardware/ESP32_C6_BME688_HYBRID0402/ESP32_C6_BME688_HYBRID0402.dsn
   (parser
     (string_quote ")
     (space_in_quoted_tokens on)
@@ -33,16 +33,16 @@
   )
   (placement
     (component "RF_Module:ESP32-C6-MINI-1"
-      (place U1 110000 -108000 front 0 (PN "ESP32-C6-MINI-1"))
-    )
-    (component Connector_PinHeader_1.27mm:PinHeader_1x04_P1.27mm_Vertical
-      (place J3 101200 -110790 front 0 (PN Daughterboard_Interface))
+      (place U1 110225 -110000 front 0 (PN "ESP32-C6-MINI-1"))
     )
     (component "Connector_USB:USB_C_Receptacle_Palconn_UTC16-G"
-      (place J1 121160 -114680 front 90 (PN USB_C))
+      (place J1 121300 -113710 front 90 (PN USB_C))
+    )
+    (component Connector_PinHeader_1.27mm:PinHeader_1x04_P1.27mm_Vertical
+      (place J3 101400 -108400 front 0 (PN Daughterboard_Interface))
     )
     (component Resistor_SMD:R_0603_1608Metric
-      (place R5 111375 -119000 back 180 (PN 10k))
+      (place R5 111500 -117500 back 180 (PN 10k))
       (place R3 114975 -117200 back 180 (PN 5.1k))
       (place R4 115025 -119000 back 180 (PN 5.1k))
     )
@@ -58,7 +58,7 @@
     )
     (component Resistor_SMD:R_0603_1608Metric::1
       (place R1 102000 -106000 back 270 (PN 4.7k))
-      (place R2 111400 -116375 back 270 (PN 4.7k))
+      (place R2 101250 -115000 back 270 (PN 4.7k))
     )
     (component "Connector_JST:JST_PH_B2B-PH-SM4-TB_1x02-1MP_P2.00mm_Vertical"
       (place J2 120000 -103700 back 180 (PN JST_PH_2PIN))
@@ -138,26 +138,6 @@
       (pin Rect[T]Pad_700.000000x700.000000_um 52 -5950 -4950)
       (pin Rect[T]Pad_700.000000x700.000000_um 53 -5950 4950)
     )
-    (image Connector_PinHeader_1.27mm:PinHeader_1x04_P1.27mm_Vertical
-      (outline (polygon signal 0  1545 -4945  -1545 -4945  -1545 1135  1545 1135))
-      (outline (path signal 120  -1160 810  0 810))
-      (outline (path signal 120  -1160 0  -1160 810))
-      (outline (path signal 120  -1160 -810  -1160 -4555))
-      (outline (path signal 120  -1160 -810  -666.708 -810))
-      (outline (path signal 120  -1160 -4555  -317.923 -4555))
-      (outline (path signal 120  317.923 -4555  1160 -4555))
-      (outline (path signal 120  666.708 -810  1160 -810))
-      (outline (path signal 120  1160 -810  1160 -4555))
-      (outline (path signal 100  -1050 110  -525 635))
-      (outline (path signal 100  -1050 -4445  -1050 110))
-      (outline (path signal 100  -525 635  1050 635))
-      (outline (path signal 100  1050 635  1050 -4445))
-      (outline (path signal 100  1050 -4445  -1050 -4445))
-      (pin Rect[A]Pad_1000.000000x1000.000000_um 1 0 0)
-      (pin Round[A]Pad_1000.000000_um 2 0 -1270)
-      (pin Round[A]Pad_1000.000000_um 3 0 -2540)
-      (pin Round[A]Pad_1000.000000_um 4 0 -3810)
-    )
     (image "Connector_USB:USB_C_Receptacle_Palconn_UTC16-G"
       (outline (polygon signal 0  -5265 -5335  -5265 3585  5265 3585  5265 -5335))
       (outline (path signal 120  4470 670  4470 -1130))
@@ -190,10 +170,30 @@
       (pin Oval[A]Pad_1700.000000x900.000000_um (rotate 90) SH@1 -4320 -2240)
       (pin Oval[A]Pad_2000.000000x900.000000_um (rotate 90) SH@2 4320 1930)
       (pin Oval[A]Pad_1700.000000x900.000000_um (rotate 90) SH@3 4320 -2240)
-      (keepout "" (circle F.Cu 800 -2890 1450))
-      (keepout "" (circle B.Cu 800 -2890 1450))
-      (keepout "" (circle F.Cu 800 2890 1450))
-      (keepout "" (circle B.Cu 800 2890 1450))
+      (keepout "" (circle F.Cu 960 -2890 1450))
+      (keepout "" (circle B.Cu 960 -2890 1450))
+      (keepout "" (circle F.Cu 960 2890 1450))
+      (keepout "" (circle B.Cu 960 2890 1450))
+    )
+    (image Connector_PinHeader_1.27mm:PinHeader_1x04_P1.27mm_Vertical
+      (outline (polygon signal 0  1545 -4945  -1545 -4945  -1545 1135  1545 1135))
+      (outline (path signal 120  -1160 810  0 810))
+      (outline (path signal 120  -1160 0  -1160 810))
+      (outline (path signal 120  -1160 -810  -1160 -4555))
+      (outline (path signal 120  -1160 -810  -666.708 -810))
+      (outline (path signal 120  -1160 -4555  -317.923 -4555))
+      (outline (path signal 120  317.923 -4555  1160 -4555))
+      (outline (path signal 120  666.708 -810  1160 -810))
+      (outline (path signal 120  1160 -810  1160 -4555))
+      (outline (path signal 100  -1050 110  -525 635))
+      (outline (path signal 100  -1050 -4445  -1050 110))
+      (outline (path signal 100  -525 635  1050 635))
+      (outline (path signal 100  1050 635  1050 -4445))
+      (outline (path signal 100  1050 -4445  -1050 -4445))
+      (pin Rect[A]Pad_1000.000000x1000.000000_um 1 0 0)
+      (pin Round[A]Pad_1000.000000_um 2 0 -1270)
+      (pin Round[A]Pad_1000.000000_um 3 0 -2540)
+      (pin Round[A]Pad_1000.000000_um 4 0 -3810)
     )
     (image Resistor_SMD:R_0603_1608Metric
       (outline (polygon signal 0  1475 -725  -1475 -725  -1475 725  1475 725))
@@ -395,7 +395,7 @@
       (pins U1-1 J3-2 C1-1 U4-5 R1-1 R2-1)
     )
     (net GND
-      (pins U1-2 U1-39 J3-1 J1-A1 J1-A12 J1-B1 J1-B12 J1-SH J1-SH@1 J1-SH@2 J1-SH@3
+      (pins U1-2 U1-39 J1-A1 J1-A12 J1-B1 J1-B12 J1-SH J1-SH@1 J1-SH@2 J1-SH@3 J3-1
         R5-2 C1-2 R3-2 U4-2 J2-2 R4-2 U3-2)
     )
     (net I2C0_SDA
