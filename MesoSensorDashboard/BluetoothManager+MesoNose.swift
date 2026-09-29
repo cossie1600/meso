@@ -49,6 +49,16 @@ extension BluetoothManager {
         }
     }
     
+    // MARK: - Device Disconnection & Unpairing
+    func disconnectMesoNose() {
+        guard let peripheral = mesoNosePeripheral else { return }
+        centralManager?.cancelPeripheralConnection(peripheral)
+        connectedPeripherals.removeValue(forKey: peripheral.identifier)
+        writeCharacteristics.removeValue(forKey: peripheral.identifier)
+        statusText = "Device Unpaired. Scanning..."
+        startScanning()
+    }
+    
     // MARK: - Sampling Directives
     func stopSampling() {
         setSamplingMode(mode: .stopped)
@@ -72,7 +82,7 @@ extension BluetoothManager {
             guard let self = self else { return }
             
             guard self.breathTestState == .idle || self.breathTestState == .completed || self.breathTestState == .timeout else {
-                AppLogger.writeLog("⚠️ Breath test trigger ignored: state is currently '\(self.breathTestState)'.")
+                AppLogger.writeLog("Breath test trigger ignored: state is currently '\(self.breathTestState)'.")
                 return
             }
             
@@ -139,17 +149,17 @@ extension BluetoothManager {
             
             // 4. Attempt parsing the final payload into a MesoNoseSample
             guard let sample = MesoNoseSample(jsonString: text) else {
-                AppLogger.writeLog("⚠️ Failed to parse MesoNoseSample from JSON payload: \(text)")
+                AppLogger.writeLog("Failed to parse MesoNoseSample from JSON payload: \(text)")
                 return
             }
             
             // -------------------------------------------------------------------
-            // 🛡️ INGESTION SANITATION & OUTLIER FILTERING
+            // INGESTION SANITATION & OUTLIER FILTERING
             // -------------------------------------------------------------------
             
             // Filter 3a: Drop zeroed boot/uninitialized frames (temp == 0, rh == 0)
             guard sample.temp > 0.0 && sample.humidity > 0.0 else {
-                AppLogger.writeLog("🛡️ Ingestion Filter: Dropped zeroed boot frame during hardware initialization.")
+                AppLogger.writeLog("Ingestion Filter: Dropped zeroed boot frame during hardware initialization.")
                 return
             }
             
@@ -158,7 +168,7 @@ extension BluetoothManager {
             let isTransientWarmupSpike = sample.voc > 2_000_000 && !hasValidBreathResult
 
             guard !isTransientWarmupSpike else {
-                AppLogger.writeLog("🛡️ Ingestion Filter: Rejected MOX sensor thermal stabilization spike [VOC: \(sample.voc)].")
+                AppLogger.writeLog("Ingestion Filter: Rejected MOX sensor thermal stabilization spike [VOC: \(sample.voc)].")
                 return
             }
             
@@ -197,7 +207,7 @@ extension BluetoothManager {
                 guard let self = self else { return }
                 
                 if self.breathTestState == .blowNow || self.breathTestState == .processing {
-                    AppLogger.writeLog("⚠️ Blow window timed out with no hardware evaluation packet. Auto-recovering...")
+                    AppLogger.writeLog("Blow window timed out with no hardware evaluation packet. Auto-recovering...")
                     self.statusText = "No Breath Detected"
                     self.handleBreathTestCompletion(didSucceed: false)
                 }

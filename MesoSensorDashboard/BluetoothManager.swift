@@ -241,33 +241,40 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     }
     
     func centralManager(_ central: CBCentralManager,
-                        didDiscover peripheral: CBPeripheral,
-                        advertisementData: [String : Any],
-                        rssi RSSI: NSNumber) {
-        
-        let deviceName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? "Unnamed Local Device"
-        
-        let isMesoPin = deviceName.hasPrefix(AppConfig.bluetoothDeviceName)
-        let isMesoNose = deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName)
-        
-        if isMesoPin || isMesoNose {
-            let deviceID = peripheral.identifier
+                            didDiscover peripheral: CBPeripheral,
+                            advertisementData: [String : Any],
+                            rssi RSSI: NSNumber) {
             
-            if connectedPeripherals[deviceID] == nil {
-                AppLogger.writeLog("Target match found: \(deviceName) [ID: \(deviceID)] RSSI: \(RSSI)")
+            let deviceName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? "Unnamed Local Device"
+            
+            let isMesoPin = deviceName.hasPrefix(AppConfig.bluetoothDeviceName)
+            let isMesoNose = deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName)
+            
+            if isMesoPin || isMesoNose {
+                let deviceID = peripheral.identifier
                 
-                connectedPeripherals[deviceID] = peripheral
-                incomingBuffers[deviceID] = ""
-                peripheral.delegate = self
-                
-                DispatchQueue.main.async {
-                    self.statusText = "Connecting to \(deviceName)..."
+                if connectedPeripherals[deviceID] == nil {
+                    // Proximity Auto-Pairing: Require signal strength >= -45 dBm (device held close)
+                    let proximityRSSIThreshold = -45
+                    guard RSSI.intValue != 127 && RSSI.intValue >= proximityRSSIThreshold else {
+                        AppLogger.writeLog("Proximity Filter: \(deviceName) [ID: \(deviceID)] ignored due to weak RSSI: \(RSSI)")
+                        return
+                    }
+                    
+                    AppLogger.writeLog("Target match found (Proximity OK): \(deviceName) [ID: \(deviceID)] RSSI: \(RSSI)")
+                    
+                    connectedPeripherals[deviceID] = peripheral
+                    incomingBuffers[deviceID] = ""
+                    peripheral.delegate = self
+                    
+                    DispatchQueue.main.async {
+                        self.statusText = "Connecting to \(deviceName)..."
+                    }
+                    
+                    self.centralManager?.connect(peripheral, options: nil)
                 }
-                
-                self.centralManager?.connect(peripheral, options: nil)
             }
         }
-    }
     
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         let deviceName = peripheral.name ?? "Unknown Device"
