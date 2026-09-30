@@ -11,8 +11,10 @@
 #define I2C_SDA 6
 #define I2C_SCL 7
 
-#define SERVICE_UUID        "4FA215F0-0001-4B0E-B682-1A4C70F3A601"
-#define CHARACTERISTIC_UUID "4FA215F0-0002-4B0E-B682-1A4C70F3A601"
+// #define SERVICE_UUID        "4FA215F0-0001-4B0E-B682-1A4C70F3A601"
+// #define CHARACTERISTIC_UUID "4FA215F0-0002-4B0E-B682-1A4C70F3A601"
+#define SERVICE_UUID        "4fa215f0-0001-4b0e-b682-1a4c70f3a601"
+#define CHARACTERISTIC_UUID "4fa215f0-0002-4b0e-b682-1a4c70f3a601"
 
 String Device_Name = "Meso Nose";
 const char* OFFLINE_FILE = "/offline_data.json";
@@ -357,9 +359,42 @@ class CharacteristicCallbacks: public NimBLECharacteristicCallbacks {
     }
 };
 
+// void initBLE() {
+//   NimBLEDevice::init(Device_Name.c_str());
+//   NimBLEDevice::setPower(ESP_PWR_LVL_P9); 
+
+//   pServer = NimBLEDevice::createServer();
+//   pServer->setCallbacks(new ServerCallbacks());
+
+//   NimBLEService *pService = pServer->createService(SERVICE_UUID);
+//   pCharacteristic = pService->createCharacteristic(
+//                       CHARACTERISTIC_UUID,
+//                       NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE |
+//                       NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY
+//                     );
+
+//   pCharacteristic->setCallbacks(new CharacteristicCallbacks());
+//   pService->start();
+
+//   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
+  
+//   NimBLEAdvertisementData advData;
+//   advData.setName(Device_Name.c_str());
+//   advData.setCompleteServices(NimBLEUUID(SERVICE_UUID));
+//   pAdvertising->setAdvertisementData(advData);
+
+//   NimBLEAdvertisementData scanData;
+//   scanData.setName(Device_Name.c_str());
+//   pAdvertising->setScanResponseData(scanData);
+
+//   pAdvertising->setMinInterval(BLE_ADV_MIN_INTERVAL);
+//   pAdvertising->setMaxInterval(BLE_ADV_MAX_INTERVAL);
+//   pAdvertising->start();
+// }
+
 void initBLE() {
+  Serial.println("[BLE] Starting NimBLE initialization...");
   NimBLEDevice::init(Device_Name.c_str());
-  NimBLEDevice::setPower(ESP_PWR_LVL_P9); 
 
   pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
@@ -375,35 +410,49 @@ void initBLE() {
   pService->start();
 
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
-  
+
+  // Packet 1: Main Advert (Flags + UUID) - Fits under 31 bytes
   NimBLEAdvertisementData advData;
-  advData.setName(Device_Name.c_str());
+  advData.setFlags(BLE_HS_ADV_F_DISC_GEN);
   advData.setCompleteServices(NimBLEUUID(SERVICE_UUID));
   pAdvertising->setAdvertisementData(advData);
 
+  // Packet 2: Scan Response (Device Name)
   NimBLEAdvertisementData scanData;
   scanData.setName(Device_Name.c_str());
   pAdvertising->setScanResponseData(scanData);
 
+  pAdvertising->enableScanResponse(true);
+
   pAdvertising->setMinInterval(BLE_ADV_MIN_INTERVAL);
   pAdvertising->setMaxInterval(BLE_ADV_MAX_INTERVAL);
+
   pAdvertising->start();
+  Serial.println("[BLE] Advertising active with split payload!");
 }
 
 void setup() {
   delay(2000); 
+  //pinMode(3, OUTPUT);
+  //digitalWrite(3, HIGH);
 
 #if ENABLE_SERIAL_LOGS
   Serial.begin(SERIAL_BAUD_RATE);
   delay(SERIAL_INIT_DELAY_MS);
   Serial.println("Booting Meso Nose with Storage & Light Sleep Support...");
+  Serial.printf("Free Heap at startup: %d bytes\n", ESP.getFreeHeap());
 #endif
 
-  if (!LittleFS.begin(true)) {
-    Serial.println("LittleFS Mount Failed");
+  if (!LittleFS.begin(true, "/littlefs", 10, "spiffs")) {
+   Serial.println("LittleFS Mount Failed and Auto-Format Failed!");
+  } else {
+   Serial.println("[STORAGE]: LittleFS mounted successfully!");
   }
 
+  Serial.println("[SETUP] Initializing BLE...");
   initBLE();
+  Serial.printf("Free Heap after BLE: %d bytes\n", ESP.getFreeHeap());
+
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(I2C_CLOCK_SPEED_HZ);
   Wire.setTimeOut(1000);
@@ -422,11 +471,16 @@ void setup() {
     bsec.setTemperatureOffset(0.0f);
     setBsecProfile(PROFILE_ULP_300S);
     bsecReady = true;
+    Serial.println("[SETUP] BSEC started successfully!");
   } else {
+    Serial.println("[SETUP] BSEC failed to start!");
     bsecReady = false;
   }
 
-  setCpuFrequencyMhz(CPU_LOW_POWER_FREQ_MHZ);
+  // Do NOT lower CPU frequency here on ESP32-C6 when NimBLE is running
+  // setCpuFrequencyMhz(CPU_LOW_POWER_FREQ_MHZ);
+  
+  Serial.println("[SETUP] Setup complete!");
 }
 
 void loop() {
@@ -457,10 +511,7 @@ void loop() {
     }
   }
 
-  // Light Sleep step when device is in background idle state
-  if (currentMode == MODE_IDLE) {
-    enterLightSleep(100); 
-  } else {
+  if (currentMode != MODE_IDLE) {
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
 }
