@@ -31,8 +31,7 @@ struct MesoNoseHistoryView: View {
             .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
-        //.navigationTitle("VOC & Humidity History")
+        .globalAppBackground()
     }
 }
 
@@ -49,17 +48,57 @@ struct MesoNoseSampleCard: View {
             HStack {
                 Text(sample.timestamp, style: .time)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .fontWeight(.bold)
+                    .foregroundColor(Color.appPrimaryText)
                 Spacer()
                 PtcBadgeView(result: resultStatus)
             }
             
-            // Primary Environmental Telemetry
+            // Primary Environmental Telemetry Row
             HStack(spacing: AppConfig.DashboardUI.metricGridSpacing) {
-                MetricCell(label: "Temp", value: String(format: AppConfig.DashboardUI.Formats.temp, sample.temp))
-                MetricCell(label: "Humidity", value: String(format: AppConfig.DashboardUI.Formats.humidity, sample.humidity))
-                MetricCell(label: "Press", value: String(format: AppConfig.DashboardUI.Formats.pressure, sample.pressure))
-                MetricCell(label: "VOC", value: String(format: AppConfig.DashboardUI.Formats.gasRes, sample.voc))
+                VStack(spacing: 2) {
+                    Text("Temp")
+                        .font(.caption2)
+                        .foregroundColor(Color.appSecondaryText)
+                    Text(String(format: AppConfig.DashboardUI.Formats.temp, sample.temp))
+                        .font(.footnote)
+                        .fontWeight(.bold)
+                        .foregroundColor(Color.appPrimaryText)
+                }
+                .frame(maxWidth: .infinity)
+                
+                VStack(spacing: 2) {
+                    Text("Humidity")
+                        .font(.caption2)
+                        .foregroundColor(Color.appSecondaryText)
+                    Text(String(format: AppConfig.DashboardUI.Formats.humidity, sample.humidity))
+                        .font(.footnote)
+                        .fontWeight(.bold)
+                        .foregroundColor(Color.appPrimaryText)
+                }
+                .frame(maxWidth: .infinity)
+                
+                VStack(spacing: 2) {
+                    Text("Press")
+                        .font(.caption2)
+                        .foregroundColor(Color.appSecondaryText)
+                    Text(String(format: AppConfig.DashboardUI.Formats.pressure, sample.pressure))
+                        .font(.footnote)
+                        .fontWeight(.bold)
+                        .foregroundColor(Color.appPrimaryText)
+                }
+                .frame(maxWidth: .infinity)
+                
+                VStack(spacing: 2) {
+                    Text("VOC")
+                        .font(.caption2)
+                        .foregroundColor(Color.appSecondaryText)
+                    Text(String(format: AppConfig.DashboardUI.Formats.gasRes, sample.voc))
+                        .font(.footnote)
+                        .fontWeight(.bold)
+                        .foregroundColor(Color.appPrimaryText)
+                }
+                .frame(maxWidth: .infinity)
             }
             
             // Breath Evaluation Metrics
@@ -68,20 +107,22 @@ struct MesoNoseSampleCard: View {
                 HStack {
                     Text("Breath Drop Delta:")
                         .font(.footnote)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Color.appSecondaryText)
                     
                     Text(String(format: AppConfig.DashboardUI.Formats.deltaDrop, sample.breathDropDelta))
                         .font(.footnote)
                         .bold()
+                        .foregroundColor(Color.appPrimaryText)
                     
                     Spacer()
                     
                     Text("Min VOC: \(String(format: AppConfig.DashboardUI.Formats.gasRes, sample.breathMin))")
                         .font(.footnote)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Color.appSecondaryText)
                 }
             }
         }
-        .padding(.vertical, AppConfig.DashboardUI.paddingVertical)
+        .padding(14)
+        .glassCardStyle()
     }
 }

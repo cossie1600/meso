@@ -19,27 +19,26 @@ struct HistoryCardView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // 🕐 Top Row: Just the Timestamp
+            // 1. Top Row: Timestamp
             HStack {
                 Text(timeFormatter.string(from: reading.timestamp))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(Color.appPrimaryText)
                     .layoutPriority(1)
                 
                 Spacer(minLength: 8)
             }
             
-            //  Bottom Row: The Three Badges auto-scaled and distributed evenly
+            // 2. Bottom Row: Environmental Metric Badges
             HStack(spacing: 8) {
                 MetricBadge(label: AppConfig.metricPMOne, value: String(format: "%.1f", reading.pm1))
                 MetricBadge(label: AppConfig.metricPMTwoFive, value: String(format: "%.1f", reading.pm25))
                 MetricBadge(label: AppConfig.metricPMTen, value: String(format: "%.1f", reading.pm10))
             }
-            .frame(maxWidth: .infinity) // Ensures they expand to fill the container width
+            .frame(maxWidth: .infinity)
         }
-        .padding(.all, 14)
-        .background(Color(.secondarySystemBackground))
-        .cornerRadius(16)
+        .padding(14)
+        .glassCardStyle()
     }
-
 }

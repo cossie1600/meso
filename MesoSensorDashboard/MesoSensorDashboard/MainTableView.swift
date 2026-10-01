@@ -1,8 +1,6 @@
 //
-//  MainTableView.swift
+//  MainTabView.swift
 //  MesoSensorDashboard
-//
-//  Created by Thomas Ai Mak on 7/13/26.
 //
 
 import SwiftUI
@@ -10,35 +8,55 @@ import SwiftUI
 struct MainTabView: View {
     @EnvironmentObject var bleManager: BluetoothManager
     
-    var body: some View {
-        TabView {
-            NavigationStack {
-                ContentView() // Subviews will automatically have access to this environment object!
-            }
-            .tabItem {
-                Label("Dashboard", systemImage: "waveform.path.ecg")
-            }
-            
-            NavigationStack {
-                // Now passing the unified, shared environment manager instance safely
-                AirQualityHistoryView(bleManager: bleManager)
-            }
-            .tabItem {
-                Label("Air Quality History", systemImage: "clock.arrow.circlepath")
-            }
-            NavigationStack {
-                MesoNoseHistoryView(bleManager: bleManager)
-            }
-            .tabItem {
-                Label("VOC & Humidity History", systemImage: "clock.arrow.circlepath")
-            }
-        }
-        .clingGemWatermark()
+    init() {
+        let navBar = UINavigationBarAppearance()
+        navBar.configureWithTransparentBackground()
+        navBar.backgroundColor = UIColor(Color.appBackground.opacity(0.85))
+        navBar.titleTextAttributes = [.foregroundColor: UIColor(Color.appPrimaryText)]
+        navBar.largeTitleTextAttributes = [.foregroundColor: UIColor(Color.appPrimaryText)]
+        
+        UINavigationBar.appearance().standardAppearance = navBar
+        UINavigationBar.appearance().scrollEdgeAppearance = navBar
+        
+        let tabBar = UITabBarAppearance()
+        tabBar.configureWithTransparentBackground()
+        tabBar.backgroundColor = UIColor(Color.appBackground.opacity(0.90))
+        
+        UITabBar.appearance().standardAppearance = tabBar
+        UITabBar.appearance().scrollEdgeAppearance = tabBar
     }
-}
-
-// MARK: - Updated Preview
-#Preview {
-    MainTabView()
-        .environmentObject(BluetoothManager()) // Supplies a quick instance for preview rendering canvas cycles
+    
+    var body: some View {
+        ZStack {
+            Color.appBackground
+                .ignoresSafeArea()
+            
+            TabView {
+                ContentView()
+                    .tabItem {
+                        Label("Votre Air", systemImage: "square.grid.2x2.fill")
+                    }
+                
+                // Combined History View
+                HistoryContainerView(bleManager: bleManager)
+                    .tabItem {
+                        Label("History", systemImage: "clock.arrow.circlepath")
+                    }
+                
+                BreathTestSheetView(
+                    sample: bleManager.mesoNoseSamples.first,
+                    result: .none
+                )
+                .tabItem {
+                    Label("Breath Test", systemImage: "wind")
+                }
+                
+                SettingsView()
+                    .tabItem {
+                        Label("Settings", systemImage: "gearshape.fill")
+                    }
+            }
+            .tint(Color.appPrimaryText)
+        }
+    }
 }

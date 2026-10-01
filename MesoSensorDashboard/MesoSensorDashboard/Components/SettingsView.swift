@@ -10,7 +10,6 @@ struct SettingsView: View {
     @EnvironmentObject var bluetoothManager: BluetoothManager
     @State private var selectedMode: SamplingMode = AppConfig.samplingMode
 
-    // Onboarding & Device Customization Storage
     @AppStorage("MesoNoseCustomNickname") private var customNickname: String = ""
     @AppStorage("MesoNosePairedUUID") private var pairedUUIDString: String = ""
 
@@ -20,9 +19,9 @@ struct SettingsView: View {
                 // Device Onboarding and Proximity Pairing
                 Section("Device Pairing & Onboarding") {
                     if let connectedNose = bluetoothManager.mesoNosePeripheral {
-                        // Connected State
                         HStack {
                             Text("Status")
+                                .foregroundColor(Color.appPrimaryText)
                             Spacer()
                             Text("Connected")
                                 .font(.subheadline)
@@ -32,17 +31,17 @@ struct SettingsView: View {
 
                         HStack {
                             Text("Device ID")
+                                .foregroundColor(Color.appPrimaryText)
                             Spacer()
                             Text(connectedNose.identifier.uuidString.prefix(8) + "...")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(Color.appSecondaryText)
                         }
 
-                        // Custom Device Nickname Input
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Device Nickname")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(Color.appSecondaryText)
                             TextField("Enter nickname (e.g. Tom's Nose)", text: $customNickname)
                                 .textFieldStyle(.roundedBorder)
                         }
@@ -60,18 +59,19 @@ struct SettingsView: View {
                             }
                         }
                     } else {
-                        // Unpaired or Searching State
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Proximity Auto-Pairing")
                                 .font(.headline)
+                                .foregroundColor(Color.appPrimaryText)
                             Text("Hold your phone within 2 inches of your Meso Nose device to auto-pair.")
                                 .font(.footnote)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(Color.appSecondaryText)
                         }
                         .padding(.vertical, 4)
 
                         HStack {
                             Text("Scan Status")
+                                .foregroundColor(Color.appPrimaryText)
                             Spacer()
                             Text(bluetoothManager.statusText)
                                 .font(.subheadline)
@@ -90,25 +90,28 @@ struct SettingsView: View {
                             }
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.blue)
+                        .tint(Color.appPrimaryText)
                     }
                 }
+                .listRowBackground(Color.tiffanyTranslucent)
 
                 // Active State Display
                 Section("Live Hardware State") {
                     HStack {
                         Text("Current Mode")
+                            .foregroundColor(Color.appPrimaryText)
                         Spacer()
                         Text(bluetoothManager.currentSamplingMode.rawValue)
                             .font(.subheadline)
                             .bold()
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(Color.blue.opacity(0.15))
-                            .foregroundColor(.blue)
+                            .background(Color.appPrimaryText.opacity(0.12))
+                            .foregroundColor(Color.appPrimaryText)
                             .cornerRadius(6)
                     }
                 }
+                .listRowBackground(Color.tiffanyTranslucent)
 
                 // Mode Selector
                 Section("Select Sampling Mode") {
@@ -119,6 +122,7 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
                 }
+                .listRowBackground(Color.tiffanyTranslucent)
 
                 // Command Submission Button
                 Section {
@@ -134,20 +138,15 @@ struct SettingsView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.blue)
+                    .tint(Color.appPrimaryText)
                 }
+                .listRowBackground(Color.tiffanyTranslucent)
             }
+            .scrollContentBackground(.hidden)
+            .background(Color.tiffanyBackground.ignoresSafeArea())
             .navigationTitle("Settings")
             .onAppear {
                 selectedMode = bluetoothManager.currentSamplingMode
-            }
-            .onChange(of: bluetoothManager.mesoNosePeripheral) { _, newPeripheral in
-                if let peripheral = newPeripheral {
-                    pairedUUIDString = peripheral.identifier.uuidString
-                    if customNickname.isEmpty {
-                        customNickname = peripheral.name ?? "My Meso Nose"
-                    }
-                }
             }
         }
     }

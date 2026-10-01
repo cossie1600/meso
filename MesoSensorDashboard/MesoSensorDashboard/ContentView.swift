@@ -8,313 +8,163 @@
 import SwiftUI
 import Combine
 import SwiftData
+import CoreBluetooth
 
 struct ContentView: View {
     @EnvironmentObject var bleManager: BluetoothManager
     
     var body: some View {
         TabView {
-            // Tab 1: Live Telemetry Dashboard
             DashboardMainView()
                 .tabItem {
-                    Label("Dashboard", systemImage: "gauge.with.dots.needle.bottom.50percent")
+                    Label("Votre Air", systemImage: "square.grid.2x2.fill")
                 }
             
-            // Tab 2: Historical Telemetry Logs
-            HistoryContainerView()
+            // Unified History View (includes both Air Quality & Meso Nose logs)
+            HistoryContainerView(bleManager: bleManager)
                 .tabItem {
                     Label("History", systemImage: "clock.arrow.circlepath")
                 }
+            
+            BreathTestSheetView(
+                sample: bleManager.mesoNoseSamples.first,
+                result: .none
+            )
+            .tabItem {
+                Label("Breath Test", systemImage: "wind")
+            }
+            
+            SettingsView()
+                .tabItem {
+                    Label("Settings", systemImage: "gearshape.fill")
+                }
         }
+        .tint(Color.appPrimaryText)
     }
 }
 
 // MARK: - Main Live Dashboard View
 private struct DashboardMainView: View {
-    @Query(sort: \DB_PMSample.timestamp, order: .reverse) var allSamples: [DB_PMSample]
-    @Query(sort: \DB_MesoNoseSample.timestamp, order: .reverse) var allNoseDbSamples: [DB_MesoNoseSample]
     @EnvironmentObject var bleManager: BluetoothManager
+    @Query(sort: \DB_MesoNoseSample.timestamp, order: .reverse) var allNoseDbSamples: [DB_MesoNoseSample]
     
-    @State private var cleanPM1: Double = 0.0
-    @State private var cleanPM25: Double = 0.0
-    @State private var cleanPM10: Double = 0.0
-    @State private var isShowingSettings = false
-    
-    private var latestNoseSample: MesoNoseSample? {
+    private var latestNose: MesoNoseSample? {
         bleManager.mesoNoseSamples.first
     }
     
-    private var latestBreathResult: PtcResult {
-        if let evaluatedSample = bleManager.mesoNoseSamples.first(where: {
-            $0.ptcResult != "NONE" && !$0.ptcResult.isEmpty
-        }) {
-            return PtcResult(rawValue: evaluatedSample.ptcResult) ?? .none
-        }
-        
-        if let dbEvaluated = allNoseDbSamples.first(where: {
-            $0.ptcResult != "NONE" && !$0.ptcResult.isEmpty
-        }) {
-            return PtcResult(rawValue: dbEvaluated.ptcResult) ?? .none
-        }
-        
-        return .none
-    }
-    
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    // 1. Meso Nose Controls & Telemetry
-                    MesoNoseSectionView(
-                        sample: latestNoseSample,
-                        result: latestBreathResult
-                    )
-                    .padding(.top, 8)
-                    
-                    Divider()
-                        .padding(.vertical, 4)
-                    
-                    // 2. Meso Pin PM Metrics
-                    MesoPinMetricsView(
-                        pm1: bleManager.pm1Value,
-                        pm25: bleManager.pm25Value,
-                        pm10: bleManager.pm10Value
-                    )
-                    
-                    Spacer(minLength: 16)
-                    
-                    // 3. Alert Banner
-                    if let alertText = bleManager.alertMessage {
-                        AlertBannerView(text: alertText, theme: bleManager.alertTheme)
-                    }
-                    
-                    // 4. Status Footer
-                    FacetedStatusLabel(text: bleManager.statusText)
-                        .padding(.bottom, 12)
-                }
-                .padding(.horizontal)
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { isShowingSettings = true }) {
-                        Image(systemName: "gearshape.fill")
-                            .imageScale(.large)
-                    }
-                }
-            }
-            .sheet(isPresented: $isShowingSettings) {
-                NavigationStack {
-                    SettingsView()
-                        .environmentObject(bleManager)
-                }
-            }
-            .background(Color(.systemBackground))
-            .animation(.easeInOut, value: bleManager.alertMessage)
-            .animation(.easeInOut, value: bleManager.breathTestState)
-            .onAppear { updateUI() }
-            .onChange(of: allSamples) { _, _ in updateUI() }
-        }
-    }
-    
-    private func updateUI() {
-        let metrics = AirQualityMath.calculateCleanAverage(from: allSamples, pastHours: 1)
-        self.cleanPM1 = metrics.pm1
-        self.cleanPM25 = metrics.pm25
-        self.cleanPM10 = metrics.pm10
-    }
-}
-
-// MARK: - Tab 2: Combined History Navigation View
-private struct HistoryContainerView: View {
-    @EnvironmentObject var bleManager: BluetoothManager
-    @State private var selectedSegment = 0
-
-    var body: some View {
-        NavigationStack {
+        ZStack {
+            // Background: Light Tiffany Blue / Green
+            Color.appBackground
+                .ignoresSafeArea()
+            
             VStack(spacing: 0) {
-                Picker("History Source", selection: $selectedSegment) {
-                    Text("Meso Pin (PM)").tag(0)
-                    Text("Meso Nose (Breath)").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-
-                if selectedSegment == 0 {
-                    AirQualityHistoryView(bleManager: bleManager)
-                } else {
-                    MesoNoseHistoryView(bleManager: bleManager)
-                }
-            }
-            .navigationTitle("Telemetry History")
-        }
-    }
-}
-
-// MARK: - Subview 1: Meso Nose Section
-private struct MesoNoseSectionView: View {
-    let sample: MesoNoseSample?
-    let result: PtcResult
-    @EnvironmentObject var bleManager: BluetoothManager
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: AppConfig.DashboardUI.cardSpacing) {
-            HStack {
-                Label("", systemImage: "wind")
-                    .font(.headline)
-                Spacer()
-                
-                let statusColor: Color = bleManager.isRoomBaselineReady ? .green : .red
-
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 8, height: 8)
-                    Text(bleManager.isRoomBaselineReady ? "Baseline Ready" : "Baseline Not Ready")
-                        .font(.caption2)
-                        .fontWeight(.bold)
-                        .foregroundColor(statusColor)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(statusColor.opacity(0.15))
-                .clipShape(Capsule())
-                
-                PtcBadgeView(result: result)
-            }
-            
-            // 🕒 Cooldown Pill Component
-            if bleManager.isCoolingDown {
-                CooldownTimerView(lastTestDate: bleManager.lastTestCompletedDate)
-                    .padding(.vertical, 2)
-            }
-            
-            // 🟡 Status Banner: Baseline Warmup & Stabilization Cue
-            if !bleManager.isRoomBaselineReady && bleManager.breathTestState == .idle {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.orange)
+                // MARK: 1. Custom Header Bar
+                HStack {
+                    Text("Votre Air")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundColor(Color.appPrimaryText)
                     
-                    Text(bleManager.isCoolingDown ? "Sensor Purging... Please wait" : "Stabilizing Sensor Baseline... Please wait")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundColor(.orange)
+                    Spacer()
+                    
+                    AlchemicalAirSymbol(size: 28)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.12))
-                .cornerRadius(8)
-                .padding(.vertical, 2)
-            }
-            
-            if bleManager.breathTestState != .idle {
-                BreathTestOverlayView(bleManager: bleManager)
-                    .transition(.scale.combined(with: .opacity))
-                    .padding(.vertical, 4)
-            }
-            
-            if let nose = sample {
-                HStack(spacing: AppConfig.DashboardUI.metricGridSpacing) {
-                    MetricCell(label: "Temp", value: String(format: AppConfig.DashboardUI.Formats.temp, nose.temp))
-                    MetricCell(label: "Humidity", value: String(format: AppConfig.DashboardUI.Formats.humidity, nose.humidity))
-                    MetricCell(label: "Pressure", value: String(format: AppConfig.DashboardUI.Formats.pressure, nose.pressure))
-                    MetricCell(label: "VOC", value: String(format: AppConfig.DashboardUI.Formats.gasRes, nose.voc))
-                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
                 
-                if result.isEvaluated || nose.breathDropDelta > 0 {
-                    HStack {
-                        Text("Breath Drop Delta:")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                        Text(String(format: AppConfig.DashboardUI.Formats.deltaDrop, nose.breathDropDelta))
-                            .font(.footnote)
-                            .bold()
-                        Spacer()
-                        Text("Min VOC: \(String(format: AppConfig.DashboardUI.Formats.gasRes, nose.breathMin))")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 16) {
+                        
+                        // MARK: Top Insight / Recommendation Card
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Moderate Comfort: Low Pressure and High Humidity may trigger joint or muscle aches. Stay hydrated and apply eye drops.")
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                .lineSpacing(4)
+                                .foregroundColor(Color.appPrimaryText)
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .glassCardStyle()
+                        
+                        // MARK: 2x2 Environmental Grid
+                        VStack(spacing: 12) {
+                            HStack(spacing: 12) {
+                                SquareMetricCard(
+                                    label: "Temp",
+                                    value: String(format: AppConfig.DashboardUI.Formats.temp, latestNose?.temp ?? 23.5),
+                                    unit: "°C"
+                                )
+                                SquareMetricCard(
+                                    label: "Humidity",
+                                    value: String(format: AppConfig.DashboardUI.Formats.humidity, latestNose?.humidity ?? 55.0),
+                                    unit: "% RH"
+                                )
+                            }
+                            
+                            HStack(spacing: 12) {
+                                SquareMetricCard(
+                                    label: "Pressure",
+                                    value: String(format: AppConfig.DashboardUI.Formats.pressure, latestNose?.pressure ?? 1013.0),
+                                    unit: "hPa"
+                                )
+                                SquareMetricCard(
+                                    label: "VOC",
+                                    value: String(format: AppConfig.DashboardUI.Formats.gasRes, latestNose?.voc ?? 210.0),
+                                    unit: nil
+                                )
+                            }
+                        }
+                        
+                        // MARK: Particulates Section (PM1.0, PM2.5, PM10)
+                        if bleManager.firmwarePeripheral?.state == .connected || true {
+                            HStack(spacing: 12) {
+                                SquareMetricCard(
+                                    label: "PM1.0",
+                                    value: bleManager.pm1Value.isEmpty ? "12" : bleManager.pm1Value,
+                                    unit: "µg/m³",
+                                    pmType: .pm1_0
+                                )
+                                SquareMetricCard(
+                                    label: "PM2.5",
+                                    value: bleManager.pm25Value.isEmpty ? "25" : bleManager.pm25Value,
+                                    unit: "µg/m³",
+                                    pmType: .pm2_5
+                                )
+                                SquareMetricCard(
+                                    label: "PM10",
+                                    value: bleManager.pm10Value.isEmpty ? "38" : bleManager.pm10Value,
+                                    unit: "µg/m³",
+                                    pmType: .pm10
+                                )
+                            }
+                        } else {
+                            // Disconnected State Prompt
+                            Button(action: { bleManager.startScanning() }) {
+                                VStack(spacing: 8) {
+                                    Image(systemName: "antenna.radiowaves.left.and.right")
+                                        .font(.title2)
+                                        .foregroundColor(Color.appPrimaryText)
+                                    Text("No Particulate Sensor Connected")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(Color.appPrimaryText)
+                                    Text("Tap to search & pair device")
+                                        .font(.caption)
+                                        .foregroundColor(Color.appSecondaryText)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 20)
+                                .background(Color.tiffanyTranslucent)
+                                .cornerRadius(18)
+                            }
+                        }
                     }
-                    .padding(.top, 4)
-                }
-            } else {
-                Text("No Meso Nose reading received yet...")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 4)
-            }
-            
-            VStack(spacing: 10) {
-                if bleManager.breathTestState == .idle {
-                    Button(action: { bleManager.triggerBreathTest() }) {
-                        Label("Breath Test", systemImage: "waveform.and.mic")
-                            .font(.footnote)
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(bleManager.isRoomBaselineReady ? .blue : .gray)
-                    .disabled(!bleManager.isRoomBaselineReady)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, 24)
                 }
             }
-            .padding(.top, 6)
-        }
-        .padding()
-        .background(Color(.secondarySystemBackground))
-        .cornerRadius(12)
-    }
-}
-
-// MARK: - Subview 2: Meso Pin Metrics Section
-private struct MesoPinMetricsView: View {
-    let pm1: String
-    let pm25: String
-    let pm10: String
-    
-    var body: some View {
-        VStack(spacing: 16) {
-            HeroMetricBox(value: pm25)
-            
-            HStack(spacing: 16) {
-                SmallMetricCard(label: AppConfig.metricPMOne, value: pm1)
-                SmallMetricCard(label: AppConfig.metricPMTen, value: pm10)
-            }
-        }
-    }
-}
-
-// MARK: - Subview 3: Alert Banner
-private struct AlertBannerView: View {
-    let text: String
-    let theme: AlertVisualTheme
-    
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "info.circle.fill")
-                .font(.title2)
-                .foregroundColor(.white)
-            
-            Text(text)
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .foregroundColor(.white)
-                .fixedSize(horizontal: false, vertical: true)
-            
-            Spacer()
-        }
-        .padding()
-        .background(bannerColor(for: theme))
-        .cornerRadius(12)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-    }
-    
-    private func bannerColor(for theme: AlertVisualTheme) -> Color {
-        switch theme {
-        case .fineParticulates: return .blue
-        case .allergenProfile, .generalCoarse: return .teal
-        case .none: return .clear
         }
     }
 }

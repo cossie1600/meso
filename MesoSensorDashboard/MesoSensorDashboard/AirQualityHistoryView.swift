@@ -58,6 +58,6 @@ struct AirQualityHistoryView: View {
             .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
+        .globalAppBackground()
     }
 }
