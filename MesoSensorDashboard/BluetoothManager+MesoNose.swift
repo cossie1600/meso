@@ -52,6 +52,7 @@ extension BluetoothManager {
     // MARK: - Device Disconnection & Unpairing
     func disconnectMesoNose() {
         guard let peripheral = mesoNosePeripheral else { return }
+        savedMesoNoseUUID = nil
         centralManager?.cancelPeripheralConnection(peripheral)
         connectedPeripherals.removeValue(forKey: peripheral.identifier)
         writeCharacteristics.removeValue(forKey: peripheral.identifier)

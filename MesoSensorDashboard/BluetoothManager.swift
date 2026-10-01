@@ -59,6 +59,20 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     @Published var connectedPeripherals: [UUID: CBPeripheral] = [:]
     @Published var writeCharacteristics: [UUID: CBCharacteristic] = [:]
     
+    
+    private let savedMesoNoseUUIDKey = "SavedMesoNosePeripheralUUID"
+    private let savedMesoPinUUIDKey = "SavedMesoPinPeripheralUUID"
+
+    @Published var savedMesoNoseUUID: UUID? {
+        didSet {
+            if let uuid = savedMesoNoseUUID {
+                UserDefaults.standard.set(uuid.uuidString, forKey: savedMesoNoseUUIDKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: savedMesoNoseUUIDKey)
+            }
+        }
+    }
+    
     // Initial startup burst handle
     var initialBurstWorkItem: DispatchWorkItem?
     
@@ -138,6 +152,11 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     
     // MARK: - Initializer
     init(modelContainer: ModelContainer? = nil) {
+        if let uuidString = UserDefaults.standard.string(forKey: savedMesoNoseUUIDKey),
+           let uuid = UUID(uuidString: uuidString) {
+            self.savedMesoNoseUUID = uuid
+        }
+        
         if let container = modelContainer {
             self.modelContainer = container
         } else {
@@ -241,40 +260,54 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     }
     
     func centralManager(_ central: CBCentralManager,
-                            didDiscover peripheral: CBPeripheral,
-                            advertisementData: [String : Any],
-                            rssi RSSI: NSNumber) {
-            
-            let deviceName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? "Unnamed Local Device"
-            
-            let isMesoPin = deviceName.hasPrefix(AppConfig.bluetoothDeviceName)
-            let isMesoNose = deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName)
-            
-            if isMesoPin || isMesoNose {
-                let deviceID = peripheral.identifier
-                
-                if connectedPeripherals[deviceID] == nil {
-                    // Proximity Auto-Pairing: Require signal strength >= -45 dBm (device held close)
-                    let proximityRSSIThreshold = -45
-                    guard RSSI.intValue != 127 && RSSI.intValue >= proximityRSSIThreshold else {
-                        AppLogger.writeLog("Proximity Filter: \(deviceName) [ID: \(deviceID)] ignored due to weak RSSI: \(RSSI)")
-                        return
-                    }
-                    
-                    AppLogger.writeLog("Target match found (Proximity OK): \(deviceName) [ID: \(deviceID)] RSSI: \(RSSI)")
-                    
-                    connectedPeripherals[deviceID] = peripheral
-                    incomingBuffers[deviceID] = ""
-                    peripheral.delegate = self
-                    
-                    DispatchQueue.main.async {
-                        self.statusText = "Connecting to \(deviceName)..."
-                    }
-                    
-                    self.centralManager?.connect(peripheral, options: nil)
-                }
+                        didDiscover peripheral: CBPeripheral,
+                        advertisementData: [String : Any],
+                        rssi RSSI: NSNumber) {
+        
+        let deviceName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? "Unnamed Local Device"
+        
+        let isMesoPin = deviceName.hasPrefix(AppConfig.bluetoothDeviceName)
+        let isMesoNose = deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName)
+        
+        guard isMesoPin || isMesoNose else { return }
+        let deviceID = peripheral.identifier
+        
+        // Ignore already connected devices
+        guard connectedPeripherals[deviceID] == nil else { return }
+        
+        // -------------------------------------------------------------------------
+        // STRATEGY 1: TARGETED AUTO-RECONNECT (If device was previously paired)
+        // -------------------------------------------------------------------------
+        if let savedUUID = savedMesoNoseUUID, isMesoNose {
+            if deviceID == savedUUID {
+                AppLogger.writeLog("Target Match Found via Saved UUID: \(deviceName) [\(deviceID)]")
+                connectToPeripheral(peripheral, deviceName: deviceName)
+                return
+            } else {
+                // Ignore other Meso Nose devices in the room when a target is already saved
+                AppLogger.writeLog("Ignored nearby \(deviceName) [\(deviceID)]: Does not match saved target UUID (\(savedUUID)).")
+                return
             }
         }
+        
+        // -------------------------------------------------------------------------
+        // STRATEGY 2: FIRST-TIME PAIRING (RSSI Proximity Filter: -65 dBm or closer)
+        // -------------------------------------------------------------------------
+        let proximityRSSIThreshold = -65
+        guard RSSI.intValue != 127 && RSSI.intValue >= proximityRSSIThreshold else {
+            AppLogger.writeLog("Proximity Filter: \(deviceName) [ID: \(deviceID)] ignored due to weak RSSI: \(RSSI)")
+            return
+        }
+        
+        AppLogger.writeLog("First-time pairing match found: \(deviceName) [ID: \(deviceID)] RSSI: \(RSSI)")
+        
+        // Save as target device on first connection if it's Meso Nose
+        if isMesoNose {
+            self.savedMesoNoseUUID = deviceID
+        }
+        
+        connectToPeripheral(peripheral, deviceName: deviceName)
+    }
     
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         let deviceName = peripheral.name ?? "Unknown Device"
@@ -474,6 +507,18 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
                 handleMesoNosePacket(jsonCandidate)
             }
         }
+    }
+    
+    private func connectToPeripheral(_ peripheral: CBPeripheral, deviceName: String) {
+        connectedPeripherals[peripheral.identifier] = peripheral
+        incomingBuffers[peripheral.identifier] = ""
+        peripheral.delegate = self
+        
+        DispatchQueue.main.async {
+            self.statusText = "Connecting to \(deviceName)..."
+        }
+        
+        self.centralManager?.connect(peripheral, options: nil)
     }
     
     private func extractJSONObjects(from buffer: inout String) -> [String] {

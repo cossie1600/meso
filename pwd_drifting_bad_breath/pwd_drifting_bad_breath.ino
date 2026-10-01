@@ -11,13 +11,30 @@
 #define I2C_SDA 6
 #define I2C_SCL 7
 
-// #define SERVICE_UUID        "4FA215F0-0001-4B0E-B682-1A4C70F3A601"
-// #define CHARACTERISTIC_UUID "4FA215F0-0002-4B0E-B682-1A4C70F3A601"
 #define SERVICE_UUID        "4fa215f0-0001-4b0e-b682-1a4c70f3a601"
 #define CHARACTERISTIC_UUID "4fa215f0-0002-4b0e-b682-1a4c70f3a601"
 
 String Device_Name = "Meso Nose";
 const char* OFFLINE_FILE = "/offline_data.json";
+
+
+// -------------------------------------------------------------------
+// Storage & Watermark Constants
+// -------------------------------------------------------------------
+constexpr unsigned long FIVE_MINUTES_IN_MS = 300000UL;
+constexpr size_t MAX_OFFLINE_FILE_SIZE_BYTES = 200000; // ~200 KB cap (~7 days of data)
+
+// -------------------------------------------------------------------
+// Dynamic Advertising & Timing Constants
+// -------------------------------------------------------------------
+// BLE Spec Advertising Interval Units: 1 unit = 0.625 ms
+constexpr uint16_t BLE_ADV_FAST_MIN_INTERVAL_UNITS = 160;  // 160 * 0.625ms = 100ms
+constexpr uint16_t BLE_ADV_FAST_MAX_INTERVAL_UNITS = 320;  // 320 * 0.625ms = 200ms
+
+constexpr uint16_t BLE_ADV_ULP_MIN_INTERVAL_UNITS  = 1600; // 1600 * 0.625ms = 1000ms (1.0 sec)
+constexpr uint16_t BLE_ADV_ULP_MAX_INTERVAL_UNITS  = 3200; // 3200 * 0.625ms = 2000ms (2.0 sec)
+
+constexpr unsigned long FAST_ADV_BURST_WINDOW_MS    = 30000UL; // 30 seconds
 
 // -------------------------------------------------------------------
 // Hardware, Serial & Clock Constants
@@ -44,10 +61,6 @@ constexpr uint32_t BREATH_WAIT_TIMEOUT_MS     = 10000;  // 10 seconds to wait fo
 constexpr uint32_t BREATH_SENSING_WINDOW_MS   = 3500;   // 3.5 seconds to capture minimum VOC nadir
 constexpr uint32_t LOOP_TICK_DELAY_MS         = 20;     
 constexpr uint32_t POLL_TICK_DELAY_MS         = 20;     
-
-// BLE Advertising Timing Units
-constexpr uint16_t BLE_ADV_MIN_INTERVAL       = 160;    
-constexpr uint16_t BLE_ADV_MAX_INTERVAL       = 320;    
 
 // -------------------------------------------------------------------
 // Physical Thresholds & Clinical Evaluation Constants
@@ -118,6 +131,7 @@ Bsec2 bsec;
 NimBLEServer *pServer = NULL;
 NimBLECharacteristic *pCharacteristic = NULL;
 
+void adjustAdvertisingPower(bool newlyDisconnected);
 void saveOfflineData();
 void flushOfflineData();
 void enterLightSleep(uint64_t sleepTimeMs);
@@ -125,6 +139,7 @@ void performWarmup();
 bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes);
 String eval_breath_result(float pctDrop);
 void runBreathSequence();
+void printStoredFileToSerial();
 
 void logMessage(String msg) {
 #if ENABLE_SERIAL_LOGS
@@ -139,6 +154,18 @@ void logMessage(String msg) {
 }
 
 void saveOfflineData() {
+  // 1. Watermark Guard: Immediate exit if log file hit capacity
+  if (LittleFS.exists(OFFLINE_FILE)) {
+    File fileCheck = LittleFS.open(OFFLINE_FILE, FILE_READ);
+    if (fileCheck) {
+      size_t currentSize = fileCheck.size();
+      fileCheck.close();
+      if (currentSize >= MAX_OFFLINE_FILE_SIZE_BYTES) {
+        return; // Early return prevents dead sample accumulation
+      }
+    }
+  }
+
   accumTemp += sensorData.currentTemp;
   accumHumidity += sensorData.currentHumidity;
   accumPressure += sensorData.currentPressure;
@@ -150,8 +177,8 @@ void saveOfflineData() {
     lastOfflineWriteTime = now;
   }
 
-  // Strictly enforce write interval: at most once every 5 minutes (300,000 ms)
-  if ((now - lastOfflineWriteTime >= 300000UL) && (accumCount > 0)) {
+  // 2. Rate-limited 5-minute write interval
+  if ((now - lastOfflineWriteTime >= FIVE_MINUTES_IN_MS) && (accumCount > 0)) {
     SensorData avgData;
     avgData.currentTemp = accumTemp / accumCount;
     avgData.currentHumidity = accumHumidity / accumCount;
@@ -166,14 +193,12 @@ void saveOfflineData() {
       file.println(avgData.toJsonString());
       file.close();
 #if ENABLE_SERIAL_LOGS
-      Serial.println("[STORAGE]: 5-minute averaged sample cached locally while BLE disconnected.");
+      Serial.println("[STORAGE]: 5-minute averaged sample cached locally.");
 #endif
     }
 
-    accumTemp = 0.0f;
-    accumHumidity = 0.0f;
-    accumPressure = 0.0f;
-    accumGasRes = 0.0f;
+    // Reset accumulators
+    accumTemp = 0.0f; accumHumidity = 0.0f; accumPressure = 0.0f; accumGasRes = 0.0f;
     accumCount = 0;
     lastOfflineWriteTime = now;
   }
@@ -331,10 +356,12 @@ class ServerCallbacks: public NimBLEServerCallbacks {
     void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) {
       deviceConnected = false;
       setBsecProfile(PROFILE_ULP_300S);
-      currentMode = MODE_IDLE;
-      dryAirActive = false;
+      currentMode = MODE_DRY_AIR_DETECTION;
+      dryAirActive = true;
       pendingBreathCommand = false;
-      NimBLEDevice::startAdvertising();
+      
+      // Reset timer and re-launch fast advertising burst
+      adjustAdvertisingPower(true);
     }
 };
 
@@ -359,41 +386,18 @@ class CharacteristicCallbacks: public NimBLECharacteristicCallbacks {
     }
 };
 
-// void initBLE() {
-//   NimBLEDevice::init(Device_Name.c_str());
-//   NimBLEDevice::setPower(ESP_PWR_LVL_P9); 
-
-//   pServer = NimBLEDevice::createServer();
-//   pServer->setCallbacks(new ServerCallbacks());
-
-//   NimBLEService *pService = pServer->createService(SERVICE_UUID);
-//   pCharacteristic = pService->createCharacteristic(
-//                       CHARACTERISTIC_UUID,
-//                       NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE |
-//                       NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY
-//                     );
-
-//   pCharacteristic->setCallbacks(new CharacteristicCallbacks());
-//   pService->start();
-
-//   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
-  
-//   NimBLEAdvertisementData advData;
-//   advData.setName(Device_Name.c_str());
-//   advData.setCompleteServices(NimBLEUUID(SERVICE_UUID));
-//   pAdvertising->setAdvertisementData(advData);
-
-//   NimBLEAdvertisementData scanData;
-//   scanData.setName(Device_Name.c_str());
-//   pAdvertising->setScanResponseData(scanData);
-
-//   pAdvertising->setMinInterval(BLE_ADV_MIN_INTERVAL);
-//   pAdvertising->setMaxInterval(BLE_ADV_MAX_INTERVAL);
-//   pAdvertising->start();
-// }
-
 void initBLE() {
   Serial.println("[BLE] Starting NimBLE initialization...");
+  
+  // Get chip MAC address suffix (e.g., "Meso Nose A1B2")
+  uint64_t mac = ESP.getEfuseMac();
+  char macSuffix[6];
+  snprintf(macSuffix, sizeof(macSuffix), "%02X%02X", 
+           (uint8_t)(mac >> 40), (uint8_t)(mac >> 32));
+  
+  Device_Name = "Meso Nose " + String(macSuffix);
+
+  Serial.println("[BLE] Device Name: " + Device_Name);
   NimBLEDevice::init(Device_Name.c_str());
 
   pServer = NimBLEDevice::createServer();
@@ -424,17 +428,12 @@ void initBLE() {
 
   pAdvertising->enableScanResponse(true);
 
-  pAdvertising->setMinInterval(BLE_ADV_MIN_INTERVAL);
-  pAdvertising->setMaxInterval(BLE_ADV_MAX_INTERVAL);
-
-  pAdvertising->start();
+  adjustAdvertisingPower(true);
   Serial.println("[BLE] Advertising active with split payload!");
 }
 
 void setup() {
   delay(2000); 
-  //pinMode(3, OUTPUT);
-  //digitalWrite(3, HIGH);
 
 #if ENABLE_SERIAL_LOGS
   Serial.begin(SERIAL_BAUD_RATE);
@@ -476,14 +475,17 @@ void setup() {
     Serial.println("[SETUP] BSEC failed to start!");
     bsecReady = false;
   }
-
-  // Do NOT lower CPU frequency here on ESP32-C6 when NimBLE is running
-  // setCpuFrequencyMhz(CPU_LOW_POWER_FREQ_MHZ);
   
   Serial.println("[SETUP] Setup complete!");
+
+#if ENABLE_SERIAL_LOGS
+  printStoredFileToSerial();
+#endif
 }
 
 void loop() {
+  adjustAdvertisingPower(false);
+
   if (pendingFlush && deviceConnected) {
     pendingFlush = false;
     flushOfflineData();
@@ -509,10 +511,44 @@ void loop() {
 
       dispatchData(sensorData.toJsonString());
     }
-  }
+  }  
+  vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));  
+}
 
-  if (currentMode != MODE_IDLE) {
-    vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
+// -------------------------------------------------------------------
+// Dynamic Power Adjustment Function
+// -------------------------------------------------------------------
+void adjustAdvertisingPower(bool newlyDisconnected) {
+  static unsigned long disconnectTime = 0;
+  static bool isInLowPowerAdvertising = false;
+
+  NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
+
+  if (newlyDisconnected) {
+    disconnectTime = millis();
+    isInLowPowerAdvertising = false;
+
+    // Trigger fast-reconnect window
+    pAdvertising->setMinInterval(BLE_ADV_FAST_MIN_INTERVAL_UNITS);
+    pAdvertising->setMaxInterval(BLE_ADV_FAST_MAX_INTERVAL_UNITS);
+    pAdvertising->start();
+    
+#if ENABLE_SERIAL_LOGS
+    Serial.println("[BLE]: Entered fast advertising mode (100ms - 200ms).");
+#endif
+  } 
+  else if (!deviceConnected && !isInLowPowerAdvertising && (millis() - disconnectTime > FAST_ADV_BURST_WINDOW_MS)) {
+    isInLowPowerAdvertising = true;
+
+    // Transition to ultra-low power advertising interval
+    pAdvertising->stop();
+    pAdvertising->setMinInterval(BLE_ADV_ULP_MIN_INTERVAL_UNITS);
+    pAdvertising->setMaxInterval(BLE_ADV_ULP_MAX_INTERVAL_UNITS);
+    pAdvertising->start();
+
+#if ENABLE_SERIAL_LOGS
+    Serial.println("[BLE]: Fast window expired. Transitioned to ULP advertising (1.0s - 2.0s).");
+#endif
   }
 }
 
@@ -626,6 +662,27 @@ bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes) {
   }
 
   return true;
+}
+
+void printStoredFileToSerial() {
+  if (!LittleFS.exists(OFFLINE_FILE)) {
+    Serial.println("[STORAGE CHECK]: No offline file found on LittleFS.");
+    return;
+  }
+
+  File file = LittleFS.open(OFFLINE_FILE, FILE_READ);
+  if (!file) {
+    Serial.println("[STORAGE CHECK]: Failed to open offline file.");
+    return;
+  }
+
+  Serial.printf("--- READING %s (Size: %d bytes) ---\n", OFFLINE_FILE, file.size());
+  while (file.available()) {
+    String line = file.readStringUntil('\n');
+    Serial.println(line);
+  }
+  Serial.println("--- END OF FILE ---");
+  file.close();
 }
 
 String eval_breath_result(float pctDrop) {
