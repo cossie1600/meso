@@ -14,7 +14,7 @@ struct BreathTestSheetView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.tiffanyBackground
+                Color.jadeiteBackground
                     .ignoresSafeArea()
                 
                 ScrollView {
@@ -34,7 +34,7 @@ struct BreathTestSheetView: View {
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .background(Color.tiffanyTranslucent)
+                            .background(Color.jadeiteBackground)
                             .clipShape(Capsule())
                             .overlay(Capsule().stroke(Color.white.opacity(0.8), lineWidth: 1))
                             
@@ -62,7 +62,7 @@ struct BreathTestSheetView: View {
                             }
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.tiffanyTranslucent)
+                            .background(Color.jadeiteTranslucent)
                             .cornerRadius(12)
                             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.8), lineWidth: 1))
                         }

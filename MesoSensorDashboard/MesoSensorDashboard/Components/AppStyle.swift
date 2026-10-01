@@ -1,17 +1,20 @@
 //
-//  MotherOfPearlStyle.swift
+//  AppStyle.swift
 //  MesoSensorDashboard
 //
+//  Created by Thomas Ai Mak on 10/1/26.
+//
+
 
 import SwiftUI
 
 // MARK: - App Color Palette
 extension Color {
-    static let tiffanyBackground = Color(red: 0.84, green: 0.94, blue: 0.89) // #D6F0E3
-    static let appBackground = tiffanyBackground
+    static let jadeiteBackground = Color(red: 0.84, green: 0.94, blue: 0.89) // #D6F0E3 Soft Pale Green
+    static let appBackground = jadeiteBackground
     
-    static let tiffanyTranslucent = Color(red: 0.90, green: 0.97, blue: 0.93).opacity(0.75)
-    static let glassCardBackground = tiffanyTranslucent
+    static let jadeiteTranslucent = Color(red: 0.90, green: 0.97, blue: 0.93).opacity(0.75)
+    static let glassCardBackground = jadeiteTranslucent
     
     /// High-contrast Charcoal Gray for sharp text legibility
     static let appPrimaryText = Color(white: 0.18)
@@ -24,7 +27,7 @@ struct GlassCardModifier: ViewModifier {
         content
             .background(
                 ZStack {
-                    Color.tiffanyTranslucent
+                    Color.jadeiteTranslucent
                     
                     LinearGradient(
                         colors: [
@@ -48,12 +51,13 @@ struct GlassCardModifier: ViewModifier {
     }
 }
 
+// MARK: - View Style Extensions
 extension View {
     func glassCardStyle() -> some View {
         self.modifier(GlassCardModifier())
     }
     
     func globalAppBackground() -> some View {
-        self.background(Color.tiffanyBackground.ignoresSafeArea())
+        self.background(Color.jadeiteBackground.ignoresSafeArea())
     }
 }

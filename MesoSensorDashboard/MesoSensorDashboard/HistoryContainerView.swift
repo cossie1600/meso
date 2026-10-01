@@ -19,7 +19,7 @@ struct HistoryContainerView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.tiffanyBackground
+                Color.jadeiteBackground
                     .ignoresSafeArea()
                 
                 VStack(spacing: 12) {

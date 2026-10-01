@@ -93,7 +93,7 @@ struct SettingsView: View {
                         .tint(Color.appPrimaryText)
                     }
                 }
-                .listRowBackground(Color.tiffanyTranslucent)
+                .listRowBackground(Color.jadeiteTranslucent)
 
                 // Active State Display
                 Section("Live Hardware State") {
@@ -111,7 +111,7 @@ struct SettingsView: View {
                             .cornerRadius(6)
                     }
                 }
-                .listRowBackground(Color.tiffanyTranslucent)
+                .listRowBackground(Color.jadeiteTranslucent)
 
                 // Mode Selector
                 Section("Select Sampling Mode") {
@@ -122,7 +122,7 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                .listRowBackground(Color.tiffanyTranslucent)
+                .listRowBackground(Color.jadeiteTranslucent)
 
                 // Command Submission Button
                 Section {
@@ -140,10 +140,10 @@ struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Color.appPrimaryText)
                 }
-                .listRowBackground(Color.tiffanyTranslucent)
+                .listRowBackground(Color.jadeiteTranslucent)
             }
             .scrollContentBackground(.hidden)
-            .background(Color.tiffanyBackground.ignoresSafeArea())
+            .background(Color.jadeiteBackground.ignoresSafeArea())
             .navigationTitle("Settings")
             .onAppear {
                 selectedMode = bluetoothManager.currentSamplingMode
