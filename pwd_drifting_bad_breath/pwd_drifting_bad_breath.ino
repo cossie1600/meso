@@ -7,6 +7,7 @@
 #include "bsec2.h"
 
 #define ENABLE_SERIAL_LOGS true 
+#define BATTERY_ADC_PIN 1 // Set to your ESP32 battery sensing pin
 
 #define I2C_SDA 6
 #define I2C_SCL 7
@@ -100,6 +101,7 @@ struct SensorData {
   float deltaDrop = 0.0f;
   long rBreathMin = 0;
   String ptcResult = "NONE";
+  uint8_t batteryPct = 100; // <--- Add Battery Percentage Field
 
   String toJsonString() const {
     String json = "{";
@@ -107,6 +109,7 @@ struct SensorData {
     json += "\"rh\":" + String(currentHumidity, 1) + ",";
     json += "\"press\":" + String(currentPressure, 1) + ",";
     json += "\"voc\":" + String((long)currentGasRes) + ",";
+    json += "\"battery\":" + String(batteryPct) + ","; // <--- Included in JSON
     json += "\"breath_drop_delta\":" + String(deltaDrop, 1) + ",";
     json += "\"breath_min\":" + String(rBreathMin) + ",";
     json += "\"ptc_result\":\"" + ptcResult + "\"";
@@ -509,6 +512,7 @@ void loop() {
       sensorData.rBreathMin = 0;
       sensorData.ptcResult = "NONE";
 
+      sensorData.batteryPct = readBatteryPercentage();
       dispatchData(sensorData.toJsonString());
     }
   }  
@@ -585,6 +589,7 @@ void runBreathSequence() {
     sensorData.deltaDrop = deltaDrop;
     sensorData.rBreathMin = (long)minRes;
     sensorData.ptcResult = eval_breath_result(deltaDrop);
+    sensorData.batteryPct = readBatteryPercentage();
     
     dispatchData("{\"status\":\"BREATH_TEST_COMPLETE\"}");
     dispatchData(sensorData.toJsonString());
@@ -690,4 +695,19 @@ String eval_breath_result(float pctDrop) {
   if (pctDrop < BREATH_MILD_MAX_DROP_PCT) return "MILD";
   if (pctDrop < BREATH_SIGNIFICANT_MAX_DROP_PCT) return "SIGNIFICANT";
   return "SEVERE";
+}
+
+uint8_t readBatteryPercentage() {
+  // Read raw ADC (ESP32 12-bit ADC: 0 - 4095)
+  uint32_t raw = analogRead(BATTERY_ADC_PIN);
+  
+  // Convert ADC reading to actual battery voltage (adjust multiplier for your resistor divider)
+  float voltage = (raw / 4095.0f) * 3.3f * 2.0f; // Multiplied by 2 for 1:1 voltage divider
+  
+  // LiPo battery voltage range: 4.2V (100%) to 3.3V (0%)
+  if (voltage >= 4.2f) return 100;
+  if (voltage <= 3.3f) return 0;
+  
+  uint8_t pct = (uint8_t)(((voltage - 3.3f) / (4.2f - 3.3f)) * 100.0f);
+  return pct;
 }

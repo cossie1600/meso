@@ -14,11 +14,13 @@ class DB_PMSample {
     var pm1: Double
     var pm25: Double
     var pm10: Double
+    var battery: Int? // Optional battery percentage (nil = unknown / disconnected)
     
-    init(timestamp: Date, pm1: Double, pm25: Double, pm10: Double) {
+    init(timestamp: Date = Date(), pm1: Double, pm25: Double, pm10: Double, battery: Int? = nil) {
         self.timestamp = timestamp
         self.pm1 = pm1
         self.pm25 = pm25
         self.pm10 = pm10
+        self.battery = battery
     }
 }

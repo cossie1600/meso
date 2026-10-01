@@ -13,6 +13,7 @@ enum MesoNoseKeys {
     static let rh = "rh"
     static let press = "press"
     static let voc = "voc"
+    static let battery = "battery"
     static let breathDropDelta = "breath_drop_delta"
     static let breathMin = "breath_min"
     static let ptcResult = "ptc_result"
@@ -24,7 +25,7 @@ enum MesoNoseKeys {
 
     /// List of key names to identify Meso Nose raw payload strings
     static let allKeys: Set<String> = [
-        rt, rh, press, voc, breathDropDelta, breathMin, ptcResult, rxCmd, status, state
+        rt, rh, press, voc, battery, breathDropDelta, breathMin, ptcResult, rxCmd, status, state
     ]
 }
 
@@ -36,18 +37,31 @@ struct MesoNoseSample: Identifiable, Codable {
     let humidity: Double        // "rh" aka relative humidity
     let pressure: Double        // "press" aka pressure
     let voc: Int                // "voc"
+    let battery: Int?           // "battery" (Optional)
     let breathDropDelta: Double // "breath_drop_delta"
     let breathMin: Int          // "breath_min"
     let ptcResult: String       // "ptc_result"
     
     /// Memberwise initializer for constructing samples with exact database timestamps
-    init(id: UUID = UUID(), timestamp: Date = Date(), temp: Double, humidity: Double, pressure: Double = 0.0, voc: Int, breathDropDelta: Double, breathMin: Int, ptcResult: String) {
+    init(
+        id: UUID = UUID(),
+        timestamp: Date = Date(),
+        temp: Double,
+        humidity: Double,
+        pressure: Double = 0.0,
+        voc: Int,
+        battery: Int? = nil,    // Default to nil (Unknown)
+        breathDropDelta: Double,
+        breathMin: Int,
+        ptcResult: String
+    ) {
         self.id = id
         self.timestamp = timestamp
         self.temp = temp
         self.humidity = humidity
         self.pressure = pressure
         self.voc = voc
+        self.battery = battery
         self.breathDropDelta = breathDropDelta
         self.breathMin = breathMin
         self.ptcResult = ptcResult
@@ -67,6 +81,14 @@ struct MesoNoseSample: Identifiable, Codable {
         self.humidity = MesoNoseSample.extractDouble(dict[MesoNoseKeys.rh])
         self.pressure = MesoNoseSample.extractDouble(dict[MesoNoseKeys.press])
         self.voc = MesoNoseSample.extractInt(dict[MesoNoseKeys.voc])
+        
+        // Parse battery if key exists, otherwise keep nil
+        if dict[MesoNoseKeys.battery] != nil {
+            self.battery = MesoNoseSample.extractInt(dict[MesoNoseKeys.battery])
+        } else {
+            self.battery = nil
+        }
+        
         self.breathDropDelta = MesoNoseSample.extractDouble(dict[MesoNoseKeys.breathDropDelta])
         self.breathMin = MesoNoseSample.extractInt(dict[MesoNoseKeys.breathMin])
         self.ptcResult = dict[MesoNoseKeys.ptcResult] as? String ?? "NONE"

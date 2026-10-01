@@ -10,50 +10,65 @@ struct SquareMetricCard: View {
     let value: String
     let unit: String?
     var pmType: PMType? = nil
+    var size: CGFloat = 120 // Pass any size needed
     
     enum PMType {
         case pm1_0, pm2_5, pm10
     }
     
+    // Dynamic Scaled Properties based on Card Size
+    private var padding: CGFloat { size * 0.083 }          // ~10pt at 120
+    private var iconSize: CGFloat { size * 0.316 }         // ~38pt at 120
+    private var iconFontSize: CGFloat { size * 0.20 }      // ~24pt at 120
+    private var labelFontSize: CGFloat { size * 0.108 }    // ~13pt at 120
+    private var valueFontSize: CGFloat { size * 0.15 }     // ~18pt at 120
+    private var unitFontSize: CGFloat { size * 0.091 }     // ~11pt at 120
+    private var spacing: CGFloat { size * 0.05 }           // ~6pt at 120
+
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: spacing) {
             Spacer(minLength: 0)
             
-            // Icon section
+            // Dynamic Icon Section
             if let pm = pmType {
-                PMDotDensityIcon(type: pm)
-                    .frame(height: 38)
+                PMDotDensityIcon(type: pm, size: iconSize)
+                    .frame(width: iconSize, height: iconSize)
             } else {
                 Image(systemName: iconName(for: label))
-                    .font(.system(size: 24, weight: .medium))
+                    .font(.system(size: iconFontSize, weight: .medium))
                     .foregroundColor(Color.appPrimaryText)
             }
             
             Spacer(minLength: 0)
             
-            // Label in Dark Gray
+            // Label
             Text(label)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .font(.system(size: labelFontSize, weight: .semibold, design: .rounded))
                 .foregroundColor(Color.appPrimaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             
-            // Value + Unit in Dark Gray
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
+            // Value + Unit Inline
+            HStack(alignment: .firstTextBaseline, spacing: size * 0.025) {
                 Text(value)
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .font(.system(size: valueFontSize, weight: .bold, design: .rounded))
                     .foregroundColor(Color.appPrimaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 
                 if let unit = unit {
                     Text(unit)
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .font(.system(size: unitFontSize, weight: .medium, design: .rounded))
                         .foregroundColor(Color.appSecondaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
             }
             
             Spacer(minLength: 0)
         }
-        .padding(10)
-        .frame(maxWidth: .infinity)
-        .aspectRatio(1.0, contentMode: .fit)
+        .padding(padding)
+        .frame(width: size, height: size)
         .glassCardStyle()
     }
     
@@ -68,21 +83,23 @@ struct SquareMetricCard: View {
     }
 }
 
-// MARK: - PM Micro Dot Density Vector Icons
+// MARK: - Scalable PM Micro Dot Density Vector Icons
 struct PMDotDensityIcon: View {
     let type: SquareMetricCard.PMType
+    var size: CGFloat = 38
     
     var body: some View {
-        Canvas { context, size in
-            let w = size.width
-            let h = size.height
+        Canvas { context, canvasSize in
+            let w = canvasSize.width
+            let h = canvasSize.height
             let center = CGPoint(x: w / 2, y: h / 2)
+            let scaleFactor = w / 38.0 // Reference standard size 38pt
             
             switch type {
             case .pm1_0:
                 let rows = 7
                 let cols = 7
-                let dotRadius: CGFloat = 1.0
+                let dotRadius: CGFloat = 1.0 * scaleFactor
                 for r in 0..<rows {
                     for c in 0..<cols {
                         let x = (w * 0.25) + CGFloat(c) * (w * 0.5 / CGFloat(cols - 1))
@@ -94,7 +111,7 @@ struct PMDotDensityIcon: View {
                 
             case .pm2_5:
                 let count = 12
-                let dotRadius: CGFloat = 2.2
+                let dotRadius: CGFloat = 2.2 * scaleFactor
                 for i in 0..<count {
                     let angle = Double(i) * (2 * .pi / Double(count))
                     let dist = (i % 2 == 0) ? w * 0.25 : w * 0.12
@@ -106,7 +123,7 @@ struct PMDotDensityIcon: View {
                 
             case .pm10:
                 let count = 8
-                let dotRadius: CGFloat = 3.8
+                let dotRadius: CGFloat = 3.8 * scaleFactor
                 for i in 0..<count {
                     let angle = Double(i) * (2 * .pi / Double(count))
                     let dist = w * 0.22
@@ -117,6 +134,6 @@ struct PMDotDensityIcon: View {
                 }
             }
         }
-        .frame(width: 38, height: 38)
+        .frame(width: size, height: size)
     }
 }

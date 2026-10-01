@@ -7,12 +7,11 @@ import SwiftUI
 
 struct HistoryContainerView: View {
     @ObservedObject var bleManager: BluetoothManager
-    // Set default to .mesoNose so live sensor samples display instantly
     @State private var selectedHistoryTab: HistoryTab = .mesoNose
     
     enum HistoryTab: String, CaseIterable, Identifiable {
-        case mesoNose = "Breath Logs"
-        case airQuality = "Air Quality"
+        case mesoNose = "Microclimate"
+        case airQuality = "Particulates"
         
         var id: String { self.rawValue }
     }
