@@ -13,7 +13,7 @@ enum SamplingMode: String, CaseIterable, Identifiable {
     case active3s = "Active Sampling (3s)"
     case ulp5m = "Ultra Low Power (5m)"
     case stopped = "Stopped"
-    
+
     var id: String { rawValue }
 }
 
@@ -24,52 +24,68 @@ struct AppConfig {
     static let simulatorSpeedSec: TimeInterval = 5.0
     enum MockFormat { case csv, json }
     static let activeMockFormat: MockFormat = .json
-    
+
     // Default Sampling Configuration
     static var samplingMode: SamplingMode = .ulp5m
-    
+
     // 📡 BLE Hardware Identification
     // Meso Pin (BMV080 Air Quality)
-    static let firmwareServiceUUIDString: String = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+    static let firmwareServiceUUIDString: String =
+        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
     static let bluetoothDeviceName = "Meso Pin"
 
     // Meso Nose (BME688 Breath/Gas)
-    static let mesoNoseServiceUUIDString: String = "4FA215F0-0001-4B0E-B682-1A4C70F3A601"
-    static let mesoNoseCharacteristicUUIDString: String = "4FA215F0-0002-4B0E-B682-1A4C70F3A601"
+    static let mesoNoseServiceUUIDString: String =
+        "4FA215F0-0001-4B0E-B682-1A4C70F3A601"
+    static let mesoNoseCharacteristicUUIDString: String =
+        "4FA215F0-0002-4B0E-B682-1A4C70F3A601"
     static let mesoNoseBluetoothName = "Meso Nose"
-    
+
     // App Info
     static let companyName = "ClingGem"
-    
+
     // 🧹 Database Cleanup Policy
     static let databaseRetentionDays: Int = 30
-    
+
     // 🚨 Logging Properties
     static let isLoggingEnabled: Bool = true
     static let applogFileName: String = "meso_sensor_log.txt"
     static let maxLogSizeInMB: Int = 5
-    
+
     static var maxLogSizeInBytes: Int64 {
         return Int64(maxLogSizeInMB) * 1024 * 1024
     }
-    
+
     // Reading Constants
     static let metricPMOne = "PM1.0"
     static let metricPMTwoFive = "PM2.5"
     static let metricPMTen = "PM10.0"
     static let metricUnit = "µg/m³"
-    
-    // 🚨 Air Quality Spike Thresholds
+
+    // Air Quality Spike Thresholds
     static let pm25AlertThreshold: Double = 35.0
     static let pm10AlertThreshold: Double = 75.0
-    static let vocWarmupSpikeThreshold: Double = 2_000_000.0 // 👈 Added for MOX spike filter
-    
+    static let vocWarmupSpikeThreshold: Double = 2_000_000.0  // 👈 Added for MOX spike filter
+
     static let coarseParticleAlertThreshold: Double = 0.70
     static let ultraFineParticleAlertThreshold: Double = 5.0
-    
+
     /// Threshold interval in seconds for Ultra Low Power sampling mode (5 minutes)
     static let ultraLowSamplingIntervalThreshold: TimeInterval = 300.0
-    
+
+    // MARK: - Breath Test Timing Configuration
+    /// Duration (in seconds) the hardware waits for a breath drop before timing out.
+    static let breathWaitTimeout: TimeInterval = 12.0
+
+    /// Pre-heat duration (in seconds) required to stabilize the BME688 MOX heater plate.
+    static let preheatDuration: TimeInterval = 12.0
+
+    /// Duration (in seconds) of active sampling purge after test completion/timeout.
+    static let postTestPurgeDuration: TimeInterval = 60.0
+
+    /// Hardware teardown delay (in seconds) before triggering post-test active purge.
+    static let firmwareTeardownDelay: TimeInterval = 1.5
+
     // 🎨 Shared Dashboard UI Tokens & Formatting
     enum DashboardUI {
         static let cardSpacing: CGFloat = 8
@@ -79,7 +95,7 @@ struct AppConfig {
         static let badgePaddingVertical: CGFloat = 4
         static let badgeCornerRadius: CGFloat = 6
         static let backgroundOpacity: Double = 0.2
-        
+
         enum Formats {
             static let temp = "%.1f°C"
             static let humidity = "%.1f%%"
@@ -101,19 +117,19 @@ struct AppConfig {
         static let rxCmd = "rx_cmd"
         static let dH = "dH"
         static let gDrop = "gDrop"
-            
+
         static var allDiscriminators: [String] {
             [temp, press, voc, ptcResult, status, state, rxCmd, dH, gDrop]
         }
     }
-    
+
     enum MesoNoseCommand: String {
         case startActiveSampling = "run"
         case stopSampling = "stop"
         case triggerBreathTest = "breath"
         case setUltraLowSamplingMode = "set_ultra_low_sampling_mode"
         case setActiveSamplingMode = "set_active_sampling_mode"
-            
+
         var payload: String { rawValue }
 
         var description: String {
@@ -121,18 +137,29 @@ struct AppConfig {
             case .startActiveSampling: return "Start Active Sampling (3s)"
             case .stopSampling: return "Stop Sampling (Heater Off)"
             case .triggerBreathTest: return "Trigger Active Breath Evaluation"
-            case .setUltraLowSamplingMode: return "Set Ultra Low Sampling Mode (every 5 min)"
-            case .setActiveSamplingMode: return "Set Active Sampling Mode (every 3 sec)"
+            case .setUltraLowSamplingMode:
+                return "Set Ultra Low Sampling Mode (every 5 min)"
+            case .setActiveSamplingMode:
+                return "Set Active Sampling Mode (every 3 sec)"
             }
         }
     }
-    
+
     static let checkMockPath: Void = {
         let fileManager = FileManager.default
-        if let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
-            print("\n-------------------------------------------------------------")
-            print("📁 CURRENT RUN LOG PATH:\n\(docs.appendingPathComponent(applogFileName).path)")
-            print("-------------------------------------------------------------\n")
+        if let docs = fileManager.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first {
+            print(
+                "\n-------------------------------------------------------------"
+            )
+            print(
+                "📁 CURRENT RUN LOG PATH:\n\(docs.appendingPathComponent(applogFileName).path)"
+            )
+            print(
+                "-------------------------------------------------------------\n"
+            )
         }
     }()
 }

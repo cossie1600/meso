@@ -12,16 +12,7 @@ struct BreathTestOverlayView: View {
         VStack(spacing: 20) {
             switch bleManager.breathTestState {
             case .idle:
-                Button(action: { bleManager.triggerBreathTest() }) {
-                    Label("Start Breath Test", systemImage: "lungs.fill")
-                        .font(.headline)
-                        .fontWeight(.bold)
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(Color.appPrimaryText)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                }
+                EmptyView()
                 
             case .warmingUp:
                 VStack(spacing: 12) {
@@ -91,24 +82,54 @@ struct BreathTestOverlayView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 48))
                         .foregroundColor(.orange)
+                    
                     Text("No Breath Detected")
                         .font(.headline)
                         .foregroundColor(Color.appPrimaryText)
+                    
                     Text("Make sure to blow directly onto the sensor grid.")
                         .font(.caption)
                         .foregroundColor(Color.appSecondaryText)
                     
-                    Button(action: {
-                        bleManager.triggerBreathTest()
-                    }) {
-                        Label("Try Again", systemImage: "arrow.clockwise")
-                            .fontWeight(.bold)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
+                    HStack(spacing: 12) {
+                        Button(action: {
+                            bleManager.triggerBreathTest()
+                        }) {
+                            Label("Try Again", systemImage: "arrow.clockwise")
+                                .fontWeight(.bold)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color.appPrimaryText)
+                        
+                        Button(action: {
+                            bleManager.cancelBreathTest()
+                        }) {
+                            Text("Cancel")
+                                .fontWeight(.bold)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color.appPrimaryText)
                 }
+            }
+            
+            // Cancel button during active testing phases (Warming Up, Blow Now, Processing)
+            if bleManager.breathTestState == .warmingUp ||
+               bleManager.breathTestState == .blowNow ||
+               bleManager.breathTestState == .processing {
+                Button(action: {
+                    bleManager.cancelBreathTest()
+                }) {
+                    Text("Cancel Test")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.red)
+                }
+                .padding(.top, 4)
             }
         }
         .padding(20)

@@ -15,7 +15,7 @@ struct MesoNoseHistoryView: View {
             LazyVStack(spacing: AppConfig.DashboardUI.metricGridSpacing) {
                 if bleManager.mesoNoseSamples.isEmpty {
                     ContentUnavailableView(
-                        "No Breath Logs Yet",
+                        "No History Logs Yet",
                         systemImage: "wind",
                         description: Text("Waiting for data stream...")
                     )
@@ -38,31 +38,6 @@ struct MesoNoseHistoryView: View {
 struct MesoNoseSampleCard: View {
     let sample: MesoNoseSample
     
-    private var resultStatus: PtcResult {
-        PtcResult(rawValue: sample.ptcResult) ?? .none
-    }
-    
-    private var batteryIconName: String {
-        guard let battery = sample.battery else { return "battery.slash" }
-        switch battery {
-        case 0...15: return "battery.0"
-        case 16...35: return "battery.25"
-        case 36...65: return "battery.50"
-        case 66...85: return "battery.75"
-        default: return "battery.100"
-        }
-    }
-    
-    private var batteryText: String {
-        if let battery = sample.battery { return "\(battery)%" }
-        return "--%"
-    }
-    
-    private var batteryColor: Color {
-        guard let battery = sample.battery else { return Color.appSecondaryText }
-        return battery <= 20 ? .red : Color.appSecondaryText
-    }
-    
     private let miniGridColumns = [
         GridItem(.flexible(), spacing: 10),
         GridItem(.flexible(), spacing: 10)
@@ -70,29 +45,23 @@ struct MesoNoseSampleCard: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Header Row
+            // Header Row: Timestamp & Battery Level
             HStack(alignment: .center, spacing: 6) {
                 Text(sample.timestamp, style: .time)
                     .font(.caption)
                     .fontWeight(.bold)
                     .foregroundColor(Color.appPrimaryText)
                 
-                HStack(spacing: 3) {
-                    Image(systemName: batteryIconName)
-                        .font(.caption2)
-                    Text(batteryText)
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                }
-                .foregroundColor(batteryColor)
-                .padding(.leading, 4)
-
                 Spacer()
                 
-                PtcBadgeView(result: resultStatus)
+                BatteryIndicatorView(
+                    batteryPercentage: sample.battery,
+                    fontSize: 11,
+                    iconSize: 11
+                )
             }
             
-            // 2x2 Grid using the global SquareMetricCard from SquareMetricCard.swift
+            // 2x2 Telemetry Grid
             LazyVGrid(columns: miniGridColumns, spacing: 10) {
                 SquareMetricCard(
                     label: "Temp",
@@ -123,29 +92,6 @@ struct MesoNoseSampleCard: View {
                 )
             }
             .frame(maxWidth: .infinity)
-            
-            // Breath Evaluation Footer Row
-            if resultStatus.isEvaluated || sample.breathDropDelta > 0 {
-                Divider()
-                    .padding(.vertical, 2)
-                
-                HStack {
-                    Text("Breath Drop Delta:")
-                        .font(.caption)
-                        .foregroundColor(Color.appSecondaryText)
-                    
-                    Text(String(format: AppConfig.DashboardUI.Formats.deltaDrop, sample.breathDropDelta))
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .foregroundColor(Color.appPrimaryText)
-                    
-                    Spacer()
-                    
-                    Text("Min VOC: \(String(format: AppConfig.DashboardUI.Formats.gasRes, sample.breathMin))")
-                        .font(.caption)
-                        .foregroundColor(Color.appSecondaryText)
-                }
-            }
         }
         .padding(14)
         .glassCardStyle()

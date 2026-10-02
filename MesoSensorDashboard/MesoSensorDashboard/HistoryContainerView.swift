@@ -4,16 +4,25 @@
 //
 
 import SwiftUI
+import CoreBluetooth
 
 struct HistoryContainerView: View {
     @ObservedObject var bleManager: BluetoothManager
-    @State private var selectedHistoryTab: HistoryTab = .mesoNose
+    @State private var selectedCategory: SensorCategory = .microclimate
     
-    enum HistoryTab: String, CaseIterable, Identifiable {
-        case mesoNose = "Microclimate"
-        case airQuality = "Particulates"
-        
-        var id: String { self.rawValue }
+    private var isMesoNoseConnected: Bool {
+        bleManager.mesoNosePeripheral != nil
+    }
+    
+    private var isPMConnected: Bool {
+        bleManager.mesoPinPeripheral?.state == .connected
+    }
+    
+    private var connectedCategories: [SensorCategory] {
+        var categories: [SensorCategory] = []
+        if isMesoNoseConnected { categories.append(.microclimate) }
+        if isPMConnected { categories.append(.particulates) }
+        return categories
     }
     
     var body: some View {
@@ -22,26 +31,49 @@ struct HistoryContainerView: View {
                 Color.jadeiteBackground
                     .ignoresSafeArea()
                 
-                VStack(spacing: 12) {
-                    Picker("History Type", selection: $selectedHistoryTab) {
-                        ForEach(HistoryTab.allCases) { tab in
-                            Text(tab.rawValue).tag(tab)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
+                VStack(spacing: 0) {
+                    DashboardHeaderView(title: "History")
                     
-                    switch selectedHistoryTab {
-                    case .mesoNose:
-                        MesoNoseHistoryView(bleManager: bleManager)
-                    case .airQuality:
-                        AirQualityHistoryView(bleManager: bleManager)
+                    if connectedCategories.isEmpty {
+                        ContentUnavailableView(
+                            "No Active Sensors",
+                            systemImage: "antenna.radiowaves.left.and.right.slash",
+                            description: Text("Connect a sensor in Settings to view history logs.")
+                        )
+                        .padding(.top, 60)
+                    } else {
+                        if connectedCategories.count > 1 {
+                            SensorSegmentedPickerView(
+                                selectedCategory: $selectedCategory,
+                                availableCategories: connectedCategories
+                            )
+                            .padding(.horizontal, 16)
+                            .padding(.top, 8)
+                            .padding(.bottom, 12)
+                        }
+                        
+                        switch selectedCategory {
+                        case .microclimate where isMesoNoseConnected:
+                            MesoNoseHistoryView(bleManager: bleManager)
+                        case .particulates where isPMConnected:
+                            AirQualityHistoryView(bleManager: bleManager)
+                        default:
+                            EmptyView()
+                        }
                     }
                 }
             }
-            .navigationTitle("History")
-            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
+            .onChange(of: connectedCategories) { _, newCategories in
+                if let first = newCategories.first, !newCategories.contains(selectedCategory) {
+                    selectedCategory = first
+                }
+            }
+            .onAppear {
+                if let first = connectedCategories.first, !connectedCategories.contains(selectedCategory) {
+                    selectedCategory = first
+                }
+            }
         }
     }
 }

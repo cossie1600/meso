@@ -337,6 +337,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 32SKC6LW32;
@@ -346,7 +347,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Votre Air";
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app connects to your ESP32 to read live BMV080 air quality data.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Meso Pin requires continuous Bluetooth access to background-scan for localized particulate matter spikes and sync ambient air quality telemetry.";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Meso Pin requires Bluetooth access to connect to your air quality sensor and execute safe data synchronization handshakes.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -374,6 +376,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 32SKC6LW32;
@@ -383,7 +386,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Votre Air";
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app connects to your ESP32 to read live BMV080 air quality data.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Meso Pin requires continuous Bluetooth access to background-scan for localized particulate matter spikes and sync ambient air quality telemetry.";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Meso Pin requires Bluetooth access to connect to your air quality sensor and execute safe data synchronization handshakes.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

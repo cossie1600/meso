@@ -2,75 +2,103 @@
 //  DashboardTelemetryBarView.swift
 //  MesoSensorDashboard
 //
-//  Created by Thomas Ai Mak on 10/1/26.
-//
 
 import SwiftUI
 
 struct DashboardTelemetryBarView: View {
-    let tempC: Double
-    let humidity: Double
-    let pm25String: String
+    let isMesoNoseConnected: Bool
+    let isPMConnected: Bool
+    let tempC: Double?
+    let humidity: Double?
+    let mesoNoseBattery: Int?
+    let mesoPinBattery: Int?
+    let pm1Value: String
+    let pm25Value: String
+    let pm10Value: String
     
-    /// Converts Celsius to Fahrenheit
-    private var tempInFahrenheit: Double {
-        (tempC * 9.0 / 5.0) + 32.0
+    private var tempText: String {
+        guard let temp = tempC else { return "__°F" }
+        let tempInFahrenheit = (temp * 9.0 / 5.0) + 32.0
+        return String(format: "%.1f°F", tempInFahrenheit)
     }
     
-    /// Maps PM2.5 readings to standard AQI Level of Concern categories
-    private var aqiLevelOfConcern: String {
-        guard let pm25 = Double(pm25String) else {
-            return "Good"
-        }
-        
-        switch pm25 {
-        case 0.0...12.0:
-            return "Good"
-        case 12.1...35.4:
-            return "Moderate"
-        case 35.5...55.4:
-            return "Unhealthy for Sensitive Groups"
-        case 55.5...150.4:
-            return "Unhealthy"
-        case 150.5...250.4:
-            return "Very Unhealthy"
-        default:
-            return "Hazardous"
-        }
+    private var humidityText: String {
+        guard let rh = humidity else { return "__% RH" }
+        return String(format: "%.0f%% RH", rh)
+    }
+    
+    private var particulateSummaryText: String {
+        guard let pm25 = Double(pm25Value), !pm25Value.isEmpty else { return "PM --" }
+        return "PM2.5: \(pm25Value)"
     }
     
     var body: some View {
-        HStack(spacing: 12) {
-            // Temperature in Fahrenheit
-            HStack(spacing: 4) {
-                Image(systemName: "thermometer.medium")
-                    .font(.system(size: 11, weight: .medium))
-                Text(String(format: "%.1f°F", tempInFahrenheit))
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-            }
-            
-            Text("•")
-                .font(.system(size: 10))
+        HStack(spacing: 8) {
+            if !isMesoNoseConnected && !isPMConnected {
+                HStack(spacing: 4) {
+                    Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("No Sensors Connected")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                }
                 .foregroundColor(Color.appSecondaryText)
-            
-            // Relative Humidity
-            HStack(spacing: 4) {
-                Image(systemName: "drop.fill")
-                    .font(.system(size: 11, weight: .medium))
-                Text(String(format: "%.0f%% RH", humidity))
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-            }
-            
-            Text("•")
-                .font(.system(size: 10))
-                .foregroundColor(Color.appSecondaryText)
-            
-            // AQI Level of Concern (No Raw Numbers)
-            HStack(spacing: 4) {
-                Image(systemName: "aqi.medium")
-                    .font(.system(size: 11, weight: .medium))
-                Text(aqiLevelOfConcern)
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
+            } else {
+                // 1. Microclimate Telemetry (Meso Nose)
+                if isMesoNoseConnected {
+                    HStack(spacing: 4) {
+                        Image(systemName: "thermometer.medium")
+                            .font(.system(size: 11, weight: .medium))
+                        Text(tempText)
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                    }
+                    
+                    Text("•")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.appSecondaryText)
+                    
+                    HStack(spacing: 4) {
+                        Image(systemName: "drop.fill")
+                            .font(.system(size: 11, weight: .medium))
+                        Text(humidityText)
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                    }
+                    
+                    Text("•")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.appSecondaryText)
+                    
+                    BatteryIndicatorView(
+                        batteryPercentage: mesoNoseBattery,
+                        fontSize: 12,
+                        iconSize: 11
+                    )
+                }
+                
+                if isMesoNoseConnected && isPMConnected {
+                    Text("•")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.appSecondaryText)
+                }
+                
+                // 2. Particulate Telemetry (Meso Pin)
+                if isPMConnected {
+                    HStack(spacing: 4) {
+                        Image(systemName: "aqi.medium")
+                            .font(.system(size: 11, weight: .medium))
+                        Text(particulateSummaryText)
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                    }
+
+                    Text("•")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.appSecondaryText)
+
+                    BatteryIndicatorView(
+                        batteryPercentage: mesoPinBattery,
+                        fontSize: 12,
+                        iconSize: 11
+                    )
+                }
             }
             
             Spacer(minLength: 0)

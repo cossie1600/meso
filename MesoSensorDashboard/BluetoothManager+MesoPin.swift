@@ -12,18 +12,34 @@ import SwiftData
 extension BluetoothManager {
     
     /// Returns the specific CBPeripheral instance connected for Meso Pin
-    var mesoPinPeripheral: CBPeripheral? {
-        return connectedPeripherals.values.first { $0.name?.hasPrefix(AppConfig.bluetoothDeviceName) == true }
-            ?? connectedPeripherals.values.first
-    }
-    
-    /// Returns the cached write characteristic associated with the Meso Pin peripheral
-    var mesoPinWriteCharacteristic: CBCharacteristic? {
-        if let pin = mesoPinPeripheral {
-            return writeCharacteristics[pin.identifier]
+        var mesoPinPeripheral: CBPeripheral? {
+            return connectedPeripherals.values.first { $0.name?.hasPrefix(AppConfig.bluetoothDeviceName) == true }
         }
-        return writeCharacteristics.values.first
-    }
+        
+        /// Unpairs and disconnects the Meso Pin sensor specifically
+        func disconnectMesoPin() {
+            guard let peripheral = mesoPinPeripheral else { return }
+            savedMesoPinUUID = nil
+            centralManager?.cancelPeripheralConnection(peripheral)
+            connectedPeripherals.removeValue(forKey: peripheral.identifier)
+            writeCharacteristics.removeValue(forKey: peripheral.identifier)
+            
+            DispatchQueue.main.async {
+                self.pm1Value = ""
+                self.pm25Value = ""
+                self.pm10Value = ""
+            }
+            
+            startScanning()
+        }
+        
+        /// Returns the cached write characteristic associated with the Meso Pin peripheral
+        var mesoPinWriteCharacteristic: CBCharacteristic? {
+            if let pin = mesoPinPeripheral {
+                return writeCharacteristics[pin.identifier]
+            }
+            return nil
+        }
     
     /// Sends operational directives specifically to the Meso Pin peripheral
     func sendSleepIntervalToPeripheral(_ peripheral: CBPeripheral?, factor: ConnectionStrategy) {

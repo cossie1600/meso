@@ -2,17 +2,19 @@
 //  DashboardInsightCardView.swift
 //  MesoSensorDashboard
 //
-//  Created by Thomas Ai Mak on 10/1/26.
-//
 
 import SwiftUI
 
 struct DashboardInsightCardView: View {
-    let humidity: Double
-    let pressure: Double
+    let humidity: Double?
+    let pressure: Double?
     let pm25String: String
     
     private var statusRecommendation: String {
+        guard let humidity = humidity, let pressure = pressure else {
+            return "Awaiting environmental telemetry..."
+        }
+        
         let pm25 = Double(pm25String) ?? 0.0
         
         if pressure < 1005.0 && humidity > 65.0 {

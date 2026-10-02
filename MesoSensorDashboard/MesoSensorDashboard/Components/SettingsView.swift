@@ -8,146 +8,237 @@ import CoreBluetooth
 
 struct SettingsView: View {
     @EnvironmentObject var bluetoothManager: BluetoothManager
-    @State private var selectedMode: SamplingMode = AppConfig.samplingMode
+    @State private var selectedCategory: SensorCategory = .microclimate
 
-    @AppStorage("MesoNoseCustomNickname") private var customNickname: String = ""
     @AppStorage("MesoNosePairedUUID") private var pairedUUIDString: String = ""
 
+    private var settingsStatusText: String {
+        if let connectedNose = bluetoothManager.mesoNosePeripheral, connectedNose.state == .connected {
+            return "Connected"
+        } else if bluetoothManager.isPairingModeActive {
+            return "Ready For Pairing"
+        } else {
+            return "Disconnected"
+        }
+    }
+
+    private var settingsStatusColor: Color {
+        switch settingsStatusText {
+        case "Connected": return .green
+        case "Ready For Pairing": return .blue
+        default: return .secondary
+        }
+    }
+
     var body: some View {
-        NavigationStack {
-            Form {
-                // Device Onboarding and Proximity Pairing
-                Section("Device Pairing & Onboarding") {
-                    if let connectedNose = bluetoothManager.mesoNosePeripheral {
-                        HStack {
-                            Text("Status")
-                                .foregroundColor(Color.appPrimaryText)
-                            Spacer()
-                            Text("Connected")
-                                .font(.subheadline)
-                                .bold()
-                                .foregroundColor(.green)
-                        }
+        ZStack {
+            Color.appBackground.ignoresSafeArea()
 
-                        HStack {
-                            Text("Device ID")
-                                .foregroundColor(Color.appPrimaryText)
-                            Spacer()
-                            Text(connectedNose.identifier.uuidString.prefix(8) + "...")
-                                .font(.caption)
-                                .foregroundColor(Color.appSecondaryText)
-                        }
+            VStack(spacing: 0) {
+                DashboardHeaderView(title: "Settings")
 
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Device Nickname")
-                                .font(.caption)
-                                .foregroundColor(Color.appSecondaryText)
-                            TextField("Enter nickname (e.g. Tom's Nose)", text: $customNickname)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        .padding(.vertical, 4)
+                SensorSegmentedPickerView(selectedCategory: $selectedCategory)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
 
-                        Button(role: .destructive, action: {
-                            bluetoothManager.disconnectMesoNose()
-                            pairedUUIDString = ""
-                            customNickname = ""
-                        }) {
-                            HStack {
-                                Spacer()
-                                Text("Unpair Device")
-                                Spacer()
+                ScrollView {
+                    VStack(spacing: 20) {
+                        switch selectedCategory {
+                        case .microclimate:
+                            // 1. Microclimate Pairing Card
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text("MICROCLIMATE DEVICE")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundColor(Color.appSecondaryText)
+
+                                VStack(spacing: 12) {
+                                    HStack {
+                                        Text("Status")
+                                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                                            .foregroundColor(Color.appPrimaryText)
+                                        Spacer()
+                                        Text(settingsStatusText)
+                                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                                            .foregroundColor(settingsStatusColor)
+                                    }
+
+                                    if bluetoothManager.savedMesoNoseUUID != nil || bluetoothManager.mesoNosePeripheral?.state == .connected {
+                                        Divider()
+
+                                        HStack {
+                                            Text("Device ID")
+                                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                                .foregroundColor(Color.appPrimaryText)
+                                            Spacer()
+                                            Text((bluetoothManager.savedMesoNoseUUID?.uuidString ?? bluetoothManager.mesoNosePeripheral?.identifier.uuidString ?? "").prefix(8) + "...")
+                                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                                .foregroundColor(Color.appSecondaryText)
+                                        }
+
+                                        Divider()
+
+                                        HStack {
+                                            Text("Microclimate Battery")
+                                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                                .foregroundColor(Color.appPrimaryText)
+                                            Spacer()
+                                            BatteryIndicatorView(
+                                                batteryPercentage: bluetoothManager.mesoNoseBattery,
+                                                fontSize: 13,
+                                                iconSize: 13
+                                            )
+                                        }
+
+                                        Divider()
+
+                                        Button(action: {
+                                            bluetoothManager.disconnectMesoNose()
+                                            bluetoothManager.savedMesoNoseUUID = nil
+                                            pairedUUIDString = ""
+                                        }) {
+                                            Text("Unpair Device")
+                                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                                .foregroundColor(.red)
+                                                .frame(maxWidth: .infinity)
+                                                .frame(height: 48)
+                                                .background(Color.red.opacity(0.12))
+                                                .cornerRadius(12)
+                                        }
+                                        .buttonStyle(.plain)
+                                    } else {
+                                        Button(action: {
+                                            bluetoothManager.startPairingMesoNose()
+                                        }) {
+                                            Text("Start Pairing")
+                                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                                .foregroundColor(.white)
+                                                .frame(maxWidth: .infinity)
+                                                .frame(height: 48)
+                                                .background(Color.appPrimaryText)
+                                                .cornerRadius(12)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(16)
+                                .background(Color.jadeiteTranslucent)
+                                .cornerRadius(16)
+                            }
+
+                            // 2. Sampling Mode Selection Cards
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text("SELECT SAMPLING MODE")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundColor(Color.appSecondaryText)
+
+                                VStack(spacing: 10) {
+                                    SamplingModeRow(
+                                        title: "Active Sampling (3s)",
+                                        subtitle: "Continuous live telemetry stream every 3 seconds.",
+                                        isSelected: bluetoothManager.currentSamplingMode == .active3s
+                                    ) {
+                                        bluetoothManager.setSamplingMode(mode: .active3s)
+                                    }
+
+                                    SamplingModeRow(
+                                        title: "Ultra Low Power (5m)",
+                                        subtitle: "Saves battery by taking readings every 5 minutes.",
+                                        isSelected: bluetoothManager.currentSamplingMode == .ulp5m
+                                    ) {
+                                        bluetoothManager.setSamplingMode(mode: .ulp5m)
+                                    }
+
+                                    SamplingModeRow(
+                                        title: "Stopped",
+                                        subtitle: "Pause all background telemetry sampling.",
+                                        isSelected: bluetoothManager.currentSamplingMode == .stopped
+                                    ) {
+                                        bluetoothManager.setSamplingMode(mode: .stopped)
+                                    }
+                                }
+                            }
+
+                        case .particulates:
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text("PARTICULATE SENSOR")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundColor(Color.appSecondaryText)
+
+                                VStack(spacing: 12) {
+                                    HStack {
+                                        Text("Status")
+                                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                                            .foregroundColor(Color.appPrimaryText)
+                                        Spacer()
+                                        Text(bluetoothManager.mesoPinPeripheral?.state == .connected ? "Connected" : "Disconnected")
+                                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                                            .foregroundColor(bluetoothManager.mesoPinPeripheral?.state == .connected ? .green : .secondary)
+                                    }
+
+                                    if bluetoothManager.mesoPinPeripheral?.state == .connected {
+                                        Divider()
+
+                                        HStack {
+                                            Text("Particulates Battery")
+                                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                                .foregroundColor(Color.appPrimaryText)
+                                            Spacer()
+                                            BatteryIndicatorView(
+                                                batteryPercentage: bluetoothManager.pm25Value.isEmpty ? nil : 100,
+                                                fontSize: 13,
+                                                iconSize: 13
+                                            )
+                                        }
+                                    }
+                                }
+                                .padding(16)
+                                .background(Color.jadeiteTranslucent)
+                                .cornerRadius(16)
                             }
                         }
-                    } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Proximity Auto-Pairing")
-                                .font(.headline)
-                                .foregroundColor(Color.appPrimaryText)
-                            Text("Hold your phone within 2 inches of your Meso Nose device to auto-pair.")
-                                .font(.footnote)
-                                .foregroundColor(Color.appSecondaryText)
-                        }
-                        .padding(.vertical, 4)
-
-                        HStack {
-                            Text("Scan Status")
-                                .foregroundColor(Color.appPrimaryText)
-                            Spacer()
-                            Text(bluetoothManager.statusText)
-                                .font(.subheadline)
-                                .foregroundColor(.blue)
-                        }
-
-                        Button(action: {
-                            bluetoothManager.startScanning()
-                        }) {
-                            HStack {
-                                Spacer()
-                                Image(systemName: "antenna.radiowaves.left.and.right")
-                                Text("Scan for Nearby Device")
-                                    .bold()
-                                Spacer()
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Color.appPrimaryText)
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
                 }
-                .listRowBackground(Color.jadeiteTranslucent)
-
-                // Active State Display
-                Section("Live Hardware State") {
-                    HStack {
-                        Text("Current Mode")
-                            .foregroundColor(Color.appPrimaryText)
-                        Spacer()
-                        Text(bluetoothManager.currentSamplingMode.rawValue)
-                            .font(.subheadline)
-                            .bold()
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Color.appPrimaryText.opacity(0.12))
-                            .foregroundColor(Color.appPrimaryText)
-                            .cornerRadius(6)
-                    }
-                }
-                .listRowBackground(Color.jadeiteTranslucent)
-
-                // Mode Selector
-                Section("Select Sampling Mode") {
-                    Picker("Sampling Mode", selection: $selectedMode) {
-                        ForEach(SamplingMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                .listRowBackground(Color.jadeiteTranslucent)
-
-                // Command Submission Button
-                Section {
-                    Button(action: {
-                        bluetoothManager.setSamplingMode(mode: selectedMode)
-                    }) {
-                        HStack {
-                            Spacer()
-                            Image(systemName: "play.fill")
-                            Text("Set Sampling Mode")
-                                .bold()
-                            Spacer()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color.appPrimaryText)
-                }
-                .listRowBackground(Color.jadeiteTranslucent)
-            }
-            .scrollContentBackground(.hidden)
-            .background(Color.jadeiteBackground.ignoresSafeArea())
-            .navigationTitle("Settings")
-            .onAppear {
-                selectedMode = bluetoothManager.currentSamplingMode
             }
         }
+    }
+}
+
+struct SamplingModeRow: View {
+    let title: String
+    let subtitle: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(isSelected ? Color.appPrimaryText : Color.appSecondaryText)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundColor(Color.appPrimaryText)
+                    Text(subtitle)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(Color.appSecondaryText)
+                        .multilineTextAlignment(.leading)
+                }
+
+                Spacer()
+            }
+            .padding(14)
+            .background(isSelected ? Color.jadeiteTranslucent : Color.white.opacity(0.3))
+            .cornerRadius(14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(isSelected ? Color.appPrimaryText.opacity(0.5) : Color.clear, lineWidth: 1.5)
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
     }
 }

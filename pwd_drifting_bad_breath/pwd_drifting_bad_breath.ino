@@ -7,8 +7,7 @@
 #include "bsec2.h"
 
 #define ENABLE_SERIAL_LOGS true 
-#define BATTERY_ADC_PIN 1 // Set to your ESP32 battery sensing pin
-
+#define BATTERY_ADC_PIN 0
 #define I2C_SDA 6
 #define I2C_SCL 7
 
@@ -71,7 +70,7 @@ constexpr float BREATH_MILD_MAX_DROP_PCT        = 35.0f;
 constexpr float BREATH_SIGNIFICANT_MAX_DROP_PCT = 55.0f;  
 
 enum OperationMode { MODE_IDLE, MODE_DRY_AIR_DETECTION, MODE_BREATH_TEST };
-enum BsecProfile { PROFILE_OFF, PROFILE_ULP_300S, PROFILE_LP_3S };
+enum BsecProfile { PROFILE_OFF, PROFILE_ULP_300S, PROFILE_LP_3S, PROFILE_CONT_1S };
 
 OperationMode currentMode = MODE_IDLE;
 BsecProfile currentProfile = PROFILE_OFF;
@@ -208,6 +207,7 @@ void saveOfflineData() {
 }
 
 void dispatchData(String payload) {
+  Serial.println(payload);
   if (deviceConnected && pCharacteristic) {
     String formattedMsg = payload + "\n";
     pCharacteristic->setValue((uint8_t*)formattedMsg.c_str(), formattedMsg.length());
@@ -267,6 +267,8 @@ void setBsecProfile(BsecProfile profile) {
   if (currentProfile == profile) return;
   currentProfile = profile;
 
+  newGasDataAvailable = false;
+
   if (profile == PROFILE_OFF) {
     bsec.updateSubscription(sensorList, numSensors, BSEC_SAMPLE_RATE_DISABLED);
     dispatchData("{\"state\":\"PROFILE_OFF\"}");
@@ -279,12 +281,18 @@ void setBsecProfile(BsecProfile profile) {
     bsec.updateSubscription(sensorList, numSensors, BSEC_SAMPLE_RATE_LP);
     dispatchData("{\"state\":\"PROFILE_LP\"}");
   }
+  else if (profile == PROFILE_CONT_1S) {
+    bsec.updateSubscription(sensorList, numSensors, BSEC_SAMPLE_RATE_CONT);
+    dispatchData("{\"state\":\"PROFILE_CONT\"}");
+  }
   vTaskDelay(pdMS_TO_TICKS(50));
 }
 
 void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsec) {
   if (!outputs.nOutputs) return;
-
+  
+  sensorData.batteryPct = readBatteryPercentage();
+  
   for (uint8_t i = 0; i < outputs.nOutputs; i++) {
     const bsecData output = outputs.output[i];
     switch (output.sensor_id) {
@@ -437,6 +445,9 @@ void initBLE() {
 
 void setup() {
   delay(2000); 
+  pinMode(BATTERY_ADC_PIN, INPUT);
+  analogReadResolution(12);
+  analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
 
 #if ENABLE_SERIAL_LOGS
   Serial.begin(SERIAL_BAUD_RATE);
@@ -508,12 +519,15 @@ void loop() {
 
     if (millis() - lastNotifyTime >= notifyInterval) {
       lastNotifyTime = millis();
-      sensorData.deltaDrop = 0.0f;
-      sensorData.rBreathMin = 0;
-      sensorData.ptcResult = "NONE";
 
-      sensorData.batteryPct = readBatteryPercentage();
-      dispatchData(sensorData.toJsonString());
+      if (sensorData.currentGasRes > 0.0f) {
+        sensorData.deltaDrop = 0.0f;
+        sensorData.rBreathMin = 0;
+        sensorData.ptcResult = "NONE";
+
+        sensorData.batteryPct = readBatteryPercentage();
+        dispatchData(sensorData.toJsonString());
+      }
     }
   }  
   vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));  
@@ -590,7 +604,7 @@ void runBreathSequence() {
     sensorData.rBreathMin = (long)minRes;
     sensorData.ptcResult = eval_breath_result(deltaDrop);
     sensorData.batteryPct = readBatteryPercentage();
-    
+
     dispatchData("{\"status\":\"BREATH_TEST_COMPLETE\"}");
     dispatchData(sensorData.toJsonString());
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -603,11 +617,18 @@ void runBreathSequence() {
 bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes) {
   if (!bsecReady) return false;
 
+  // 1. Switch sensor to 1-second continuous sampling
+  setBsecProfile(PROFILE_CONT_1S);
+
+  // 2. Declare baselineStart variable
+  uint32_t baselineStart = millis();
   newGasDataAvailable = false;
-  uint32_t baselineTimeout = millis();
-  while (!newGasDataAvailable && (millis() - baselineTimeout < 4000UL)) {
+
+  // 3. Stabilization loop
+  while ((millis() - baselineStart < 2000UL) || !newGasDataAvailable) {
     bsec.run();
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
+    if (millis() - baselineStart > 4000UL) break; 
   }
 
   float baseHumidity = sensorData.currentHumidity;
@@ -620,7 +641,6 @@ bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes) {
 
   uint32_t startMs = millis();
   bool detected = false;
-  
   newGasDataAvailable = false;
 
   while ((millis() - startMs) < BREATH_WAIT_TIMEOUT_MS) {
@@ -639,7 +659,7 @@ bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes) {
 
       dispatchData("{\"dH\":" + String(deltaHumidity, 1) + ",\"gDrop\":" + String(gasDropPct, 1) + "}");
 
-      if (deltaHumidity >= 0.3f || gasDropPct >= 0.8f) {
+      if (deltaHumidity >= 0.2f || gasDropPct >= 0.8f) {
         detected = true;
         break;
       }
@@ -647,7 +667,10 @@ bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes) {
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
 
-  if (!detected) return false;
+  if (!detected) {
+    setBsecProfile(PROFILE_LP_3S);
+    return false;
+  }
 
   dispatchData("{\"state\":\"TESTING_SENSING_BREATH\"}");
   vTaskDelay(pdMS_TO_TICKS(50));
@@ -666,6 +689,7 @@ bool waitAndCaptureBreath(float &outBaselineRes, float &outMinRes) {
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
 
+  setBsecProfile(PROFILE_LP_3S);
   return true;
 }
 
@@ -698,13 +722,23 @@ String eval_breath_result(float pctDrop) {
 }
 
 uint8_t readBatteryPercentage() {
-  // Read raw ADC (ESP32 12-bit ADC: 0 - 4095)
-  uint32_t raw = analogRead(BATTERY_ADC_PIN);
+  // Take 4 samples to smooth high-impedance divider noise
+  uint32_t totalMv = 0;
+  for (int i = 0; i < 4; i++) {
+    totalMv += analogReadMilliVolts(BATTERY_ADC_PIN);
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  uint32_t rawMv = totalMv / 4;
   
-  // Convert ADC reading to actual battery voltage (adjust multiplier for your resistor divider)
-  float voltage = (raw / 4095.0f) * 3.3f * 2.0f; // Multiplied by 2 for 1:1 voltage divider
+  // SparkFun 100k/100k voltage divider halves VBAT -> multiply by 2.0
+  float voltage = (rawMv / 1000.0f) * 2.0f;
   
-  // LiPo battery voltage range: 4.2V (100%) to 3.3V (0%)
+  // If voltage is below 2.0V, board is running on USB-C power without a LiPo attached
+  if (voltage < 2.0f) {
+    return 100; // Default to 100% while tethered to USB
+  }
+  
+  // Single-cell LiPo Curve: 4.2V (100%) to 3.3V (0%)
   if (voltage >= 4.2f) return 100;
   if (voltage <= 3.3f) return 0;
   

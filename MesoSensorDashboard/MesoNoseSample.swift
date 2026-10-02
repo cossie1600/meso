@@ -80,17 +80,18 @@ struct MesoNoseSample: Identifiable, Codable {
         self.temp = MesoNoseSample.extractDouble(dict[MesoNoseKeys.rt])
         self.humidity = MesoNoseSample.extractDouble(dict[MesoNoseKeys.rh])
         self.pressure = MesoNoseSample.extractDouble(dict[MesoNoseKeys.press])
-        self.voc = MesoNoseSample.extractInt(dict[MesoNoseKeys.voc])
+        self.voc = MesoNoseSample.extractInt(dict[MesoNoseKeys.voc]) ?? 0
         
-        // Parse battery if key exists, otherwise keep nil
-        if dict[MesoNoseKeys.battery] != nil {
-            self.battery = MesoNoseSample.extractInt(dict[MesoNoseKeys.battery])
+        let raw_battery = MesoNoseSample.extractInt(dict[MesoNoseKeys.battery]) ?? 0
+        
+        if raw_battery > 0 {
+            self.battery = raw_battery
         } else {
             self.battery = nil
         }
         
         self.breathDropDelta = MesoNoseSample.extractDouble(dict[MesoNoseKeys.breathDropDelta])
-        self.breathMin = MesoNoseSample.extractInt(dict[MesoNoseKeys.breathMin])
+        self.breathMin = MesoNoseSample.extractInt(dict[MesoNoseKeys.breathMin]) ?? 0
         self.ptcResult = dict[MesoNoseKeys.ptcResult] as? String ?? "NONE"
     }
 
@@ -101,10 +102,11 @@ struct MesoNoseSample: Identifiable, Codable {
         return 0.0
     }
 
-    private static func extractInt(_ value: Any?) -> Int {
+    private static func extractInt(_ value: Any?) -> Int? {
         if let i = value as? Int { return i }
         if let d = value as? Double { return Int(d) }
+        if let num = value as? NSNumber { return num.intValue }
         if let s = value as? String, let parsed = Int(s) { return parsed }
-        return 0
+        return nil
     }
 }
