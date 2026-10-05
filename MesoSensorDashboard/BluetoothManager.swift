@@ -140,7 +140,8 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     }
 
     var isPurgingMoisture: Bool {
-        purgeRemainingSeconds > 0
+        guard currentSamplingMode != .ulp5m else { return false }
+        return purgeRemainingSeconds > 0
     }
 
     var isRoomBaselineReady: Bool {
@@ -224,6 +225,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             return
         }
 
+        cancelPurgeTimer()
         AppConfig.samplingMode = mode
         DispatchQueue.main.async {
             self.currentSamplingMode = mode
@@ -291,14 +293,15 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
 
         guard connectedPeripherals[deviceID] == nil else { return }
 
-        if let savedUUID = savedMesoNoseUUID, isMesoNose {
-            if deviceID == savedUUID {
-                AppLogger.writeLog("Target Match Found via Saved UUID: \(deviceName) [\(deviceID)]")
-                connectToPeripheral(peripheral, deviceName: deviceName)
-                return
-            } else {
-                return
+        // FIX: If device name matches "Meso Nose", update saved UUID and connect immediately
+        if isMesoNose {
+            if savedMesoNoseUUID != deviceID {
+                AppLogger.writeLog("Updated saved Meso Nose UUID to: \(deviceID)")
+                self.savedMesoNoseUUID = deviceID
             }
+            AppLogger.writeLog("Target Match Found via Name: \(deviceName) [\(deviceID)]")
+            connectToPeripheral(peripheral, deviceName: deviceName)
+            return
         }
 
         guard savedMesoNoseUUID == nil && isPairingModeActive else { return }
@@ -307,11 +310,6 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         guard RSSI.intValue != 127 && RSSI.intValue >= proximityRSSIThreshold else { return }
 
         AppLogger.writeLog("Pairing mode match found: \(deviceName) [ID: \(deviceID)] RSSI: \(RSSI)")
-
-        if isMesoNose {
-            self.savedMesoNoseUUID = deviceID
-            self.isPairingModeActive = false
-        }
 
         connectToPeripheral(peripheral, deviceName: deviceName)
     }
@@ -546,6 +544,17 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
     }
 
+    func cancelPurgeTimer() {
+        // 1. Cancel active background dispatch work item if running
+        postTestPurgeWorkItem?.cancel()
+        postTestPurgeWorkItem = nil
+        
+        // 2. Clear purge completion timestamp on main thread so UI updates immediately
+        DispatchQueue.main.async {
+            self.lastTestCompletedDate = nil
+            AppLogger.writeLog("Moisture purge timer cancelled and state cleared.")
+        }
+    }
     private func connectToPeripheral(_ peripheral: CBPeripheral, deviceName: String) {
         connectedPeripherals[peripheral.identifier] = peripheral
         incomingBuffers[peripheral.identifier] = ""

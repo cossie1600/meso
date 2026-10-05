@@ -24,7 +24,7 @@ struct SettingsView: View {
 
     private var settingsStatusColor: Color {
         switch settingsStatusText {
-        case "Connected": return .green
+        case "Connected": return Color(red: 0.1, green: 0.5, blue: 0.2)
         case "Ready For Pairing": return .blue
         default: return .secondary
         }
@@ -59,8 +59,13 @@ struct SettingsView: View {
                                             .foregroundColor(Color.appPrimaryText)
                                         Spacer()
                                         Text(settingsStatusText)
-                                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                                            .foregroundColor(settingsStatusColor)
+                                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                                .foregroundColor(settingsStatusColor)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 4)
+                                                .background(settingsStatusColor.opacity(0.12))
+                                                .cornerRadius(8)
+                                        
                                     }
 
                                     if bluetoothManager.savedMesoNoseUUID != nil || bluetoothManager.mesoNosePeripheral?.state == .connected {

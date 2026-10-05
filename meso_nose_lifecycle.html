@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sensor Connected Lifecycle Diagram</title>
+<style>
+  :root {
+    --bg-color: #0d1117;
+    --card-bg: #161b22;
+    --card-border: #30363d;
+    --text-primary: #c9d1d9;
+    --text-secondary: #8b949e;
+    --accent-blue: #58a6ff;
+    --accent-green: #3fb950;
+    --accent-orange: #d29922;
+    --accent-red: #f85149;
+    --line-color: #8b949e;
+  }
+
+  body {
+    background-color: var(--bg-color);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 40px 20px;
+    margin: 0;
+  }
+
+  .diagram-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    max-width: 720px;
+    position: relative;
+  }
+
+  .node {
+    background-color: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 12px 20px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    z-index: 2;
+    min-width: 220px;
+  }
+
+  .node .subtext {
+    display: block;
+    font-weight: 400;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+
+  /* Specific Node Accent Styles */
+  .node.unpaired { border-color: var(--accent-orange); color: var(--accent-orange); }
+  .node.connected { border-color: var(--accent-blue); color: var(--accent-blue); }
+  .node.ulp { border-color: #a371f7; color: #a371f7; }
+  .node.action { border-color: var(--accent-green); color: var(--accent-green); }
+  .node.processing { border-color: var(--accent-blue); color: var(--accent-blue); }
+  .node.timeout { border-color: var(--accent-red); color: var(--accent-red); }
+
+  /* SVG Arrow Connectors */
+  .connector {
+    width: 100%;
+    height: 48px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+    z-index: 1;
+  }
+
+  .connector svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .line {
+    stroke: var(--line-color);
+    stroke-width: 2;
+    fill: none;
+  }
+
+  .arrowhead {
+    fill: var(--line-color);
+  }
+
+  .label-text {
+    fill: var(--text-secondary);
+    font-size: 11px;
+    font-family: sans-serif;
+    text-anchor: middle;
+  }
+
+  /* Split/Branch Layout */
+  .split-container {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    max-width: 520px;
+    position: relative;
+  }
+
+  .split-branch {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 45%;
+  }
+</style>
+</head>
+<body>
+
+<div class="diagram-container">
+
+  <!-- UNPAIRED STATE -->
+  <div class="node unpaired">[ UNPAIRED STATE ]</div>
+
+  <!-- Arrow -->
+  <div class="connector">
+    <svg>
+      <line x1="50%" y1="0" x2="50%" y2="38" class="line" />
+      <polygon points="50%,46 46%,36 54%,36" class="arrowhead" />
+      <text x="50%" y="22" class="label-text" dx="10" text-anchor="start">(Proximity Auto-Pair / Saved UUID Match)</text>
+    </svg>
+  </div>
+
+  <!-- GATT CONNECTED -->
+  <div class="node connected">[ GATT CONNECTED ]</div>
+
+  <!-- Arrow -->
+  <div class="connector">
+    <svg>
+      <line x1="50%" y1="0" x2="50%" y2="38" class="line" />
+      <polygon points="50%,46 46%,36 54%,36" class="arrowhead" />
+    </svg>
+  </div>
+
+  <!-- Initial Burst Window -->
+  <div class="node">
+    Initial Burst Window (15s)
+    <span class="subtext">3s Active Sampling for Instant Room Baseline</span>
+  </div>
+
+  <!-- Arrow -->
+  <div class="connector">
+    <svg>
+      <line x1="50%" y1="0" x2="50%" y2="38" class="line" />
+      <polygon points="50%,46 46%,36 54%,36" class="arrowhead" />
+      <text x="50%" y="22" class="label-text" dx="10" text-anchor="start">(15s Burst Complete)</text>
+    </svg>
+  </div>
+
+  <!-- PROFILE_ULP -->
+  <div class="node ulp">
+    [ PROFILE_ULP ]
+    <span class="subtext">Low-Power Battery Saver (Samples ambient air every 5m)</span>
+  </div>
+
+  <!-- Arrow -->
+  <div class="connector">
+    <svg>
+      <line x1="50%" y1="0" x2="50%" y2="38" class="line" />
+      <polygon points="50%,46 46%,36 54%,36" class="arrowhead" />
+    </svg>
+  </div>
+
+  <!-- USER PRESSES START TEST -->
+  <div class="node action">[ USER PRESSES START TEST ]</div>
+
+  <!-- Arrow -->
+  <div class="connector">
+    <svg>
+      <line x1="50%" y1="0" x2="50%" y2="38" class="line" />
+      <polygon points="50%,46 46%,36 54%,36" class="arrowhead" />
+    </svg>
+  </div>
+
+  <!-- WARMING_UP -->
+  <div class="node">
+    [ WARMING_UP ]
+    <span class="subtext">Wakes to LP mode (3s interval) & Pre-heats MOX plate for 12s</span>
+  </div>
+
+  <!-- Arrow -->
+  <div class="connector">
+    <svg>
+      <line x1="50%" y1="0" x2="50%" y2="38" class="line" />
+      <polygon points="50%,46 46%,36 54%,36" class="arrowhead" />
+      <text x="50%" y="22" class="label-text" dx="10" text-anchor="start">(Sends "breath" BLE command)</text>
+    </svg>
+  </div>
+
+  <!-- READY_PLEASE_BLOW -->
+  <div class="node">
+    [ READY_PLEASE_BLOW ]
+    <span class="subtext">Hardware waits up to 10s for exhale humidity delta (&Delta;H)</span>
+  </div>
+
+  <!-- Split Connectors -->
+  <div class="connector" style="height: 60px;">
+    <svg>
+      <path d="M 50% 0 L 50% 20 L 25% 20 L 25% 50" class="line" />
+      <polygon points="25%,58 21%,48 29%,48" class="arrowhead" />
+      <text x="23%" y="14" class="label-text" text-anchor="end">(Blow Detected)</text>
+
+      <path d="M 50% 0 L 50% 20 L 75% 20 L 75% 50" class="line" />
+      <polygon points="75%,58 71%,48 79%,48" class="arrowhead" />
+      <text x="77%" y="14" class="label-text" text-anchor="start">(No Blow Within 10s)</text>
+    </svg>
+  </div>
+
+  <!-- Split Branches -->
+  <div class="split-container">
+    <div class="split-branch">
+      <div class="node processing" style="width: 100%; min-width: auto;">[ PROCESSING ]</div>
+    </div>
+    <div class="split-branch">
+      <div class="node timeout" style="width: 100%; min-width: auto;">[ TIMEOUT ]</div>
+    </div>
+  </div>
+
+  <!-- Merge Connectors -->
+  <div class="connector" style="height: 60px;">
+    <svg>
+      <path d="M 25% 0 L 25% 30 L 50% 30 L 50% 50" class="line" />
+      <path d="M 75% 0 L 75% 30 L 50% 30 L 50% 50" class="line" />
+      <polygon points="50%,58 46%,48 54%,48" class="arrowhead" />
+    </svg>
+  </div>
+
+  <!-- 1.5s DELAY -->
+  <div class="node">
+    [ 1.5s DELAY ]
+    <span class="subtext">Structural delay for firmware post-test teardown to complete</span>
+  </div>
+
+  <!-- Arrow -->
+  <div class="connector">
+    <svg>
+      <line x1="50%" y1="0" x2="50%" y2="38" class="line" />
+      <polygon points="50%,46 46%,36 54%,36" class="arrowhead" />
+    </svg>
+  </div>
+
+  <!-- CHAMBER PURGE -->
+  <div class="node">
+    [ CHAMBER PURGE ]
+    <span class="subtext">Active LP mode heating (60s) Flushes trapped exhale moisture</span>
+  </div>
+
+  <!-- Arrow -->
+  <div class="connector">
+    <svg>
+      <line x1="50%" y1="0" x2="50%" y2="38" class="line" />
+      <polygon points="50%,46 46%,36 54%,36" class="arrowhead" />
+      <text x="50%" y="22" class="label-text" dx="10" text-anchor="start">(Purge Complete)</text>
+    </svg>
+  </div>
+
+  <!-- PROFILE_ULP (Final) -->
+  <div class="node ulp">
+    [ PROFILE_ULP ]
+    <span class="subtext">Return to 5-minute sampling</span>
+  </div>
+
+</div>
+
+</body>
+</html>

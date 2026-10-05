@@ -149,54 +149,80 @@ extension BluetoothManager {
 
     func handleMesoNosePacket(_ text: String) {
         guard let data = text.data(using: .utf8),
-              let jsonObj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-        
+            let jsonObj = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any]
+        else { return }
+
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            
+
             // Cache battery whenever present and > 0
-            if let sample = MesoNoseSample(jsonString: text), let bat = sample.battery, bat > 0 {
+            if let sample = MesoNoseSample(jsonString: text),
+                let bat = sample.battery, bat > 0
+            {
                 self.mesoNoseBattery = bat
             }
-            
+
             if let state = jsonObj[AppConfig.MesoNoseKeys.state] as? String {
                 switch state {
                 case "WARMING_UP":
                     self.breathTestState = .warmingUp
                     self.statusText = "Heating sensor plate..."
                     return
-                    
+
                 case "READY_PLEASE_BLOW":
-                    AppLogger.writeLog("Received READY_PLEASE_BLOW from hardware. Transitioning to BLOW NOW!")
+                    AppLogger.writeLog(
+                        "Received READY_PLEASE_BLOW from hardware. Transitioning to BLOW NOW!"
+                    )
                     self.transitionToBlowNow()
                     return
-                    
+
                 case "TESTING_SENSING_BREATH":
                     self.breathTestState = .processing
                     self.statusText = "Analyzing breath sample..."
                     return
-                    
+
                 case "TIMEOUT":
                     self.statusText = "No Breath Detected"
                     self.handleBreathTestCompletion(didSucceed: false)
                     return
+
+                // Reset purge timestamp when hardware transitions to ULP
+                case "PROFILE_ULP":
+                    AppLogger.writeLog(
+                        "Ingestion: Hardware reported PROFILE_ULP. Clearing moisture purge state."
+                    )
+                    self.currentSamplingMode = .ulp5m
                     
+                    return
+
+                // Update app mode state when hardware confirms LP
+                case "PROFILE_LP":
+                    AppLogger.writeLog(
+                        "Ingestion: Hardware reported PROFILE_LP."
+                    )
+                    self.currentSamplingMode = .active3s
+                    return
+
                 default:
                     break
                 }
             }
-            
+
             guard let sample = MesoNoseSample(jsonString: text) else { return }
-            
+
             guard sample.temp > 0.0 && sample.humidity > 0.0 else { return }
-            
-            let hasValidBreathResult = sample.breathDropDelta > 0.0 || (sample.ptcResult != "NONE" && !sample.ptcResult.isEmpty)
-            let isTransientWarmupSpike = sample.voc > 2_000_000 && !hasValidBreathResult
+
+            let hasValidBreathResult =
+                sample.breathDropDelta > 0.0
+                || (sample.ptcResult != "NONE" && !sample.ptcResult.isEmpty)
+            let isTransientWarmupSpike =
+                sample.voc > 2_000_000 && !hasValidBreathResult
 
             guard !isTransientWarmupSpike else { return }
-            
+
             self.saveMesoNoseToDatabase(sample)
-            
+
             if hasValidBreathResult {
                 self.statusText = "Analysis Complete"
                 self.mesoNoseSamples.insert(sample, at: 0)
@@ -268,41 +294,54 @@ extension BluetoothManager {
 
     @MainActor
     func handleBreathTestCompletion(didSucceed: Bool) {
-        guard self.breathTestState != .completed && self.breathTestState != .timeout else { return }
-        
+        guard
+            self.breathTestState != .completed
+                && self.breathTestState != .timeout
+        else { return }
+
         self.preheatWorkItem?.cancel()
         self.preheatWorkItem = nil
         self.postTestPurgeWorkItem?.cancel()
         self.postTestPurgeWorkItem = nil
         self.blowTimeoutTimer?.invalidate()
         self.blowTimeoutTimer = nil
-        
+
         self.lastTestCompletedDate = Date()
-        
+
         // Preserve timeout or completed state so Retry/Start buttons behave properly
         self.breathTestState = didSucceed ? .completed : .timeout
-        
-        AppLogger.writeLog("Breath test finished (\(didSucceed ? "Success" : "Timeout")). Queueing \(Int(AppConfig.postTestPurgeDuration))s active moisture purge...")
-        
+
+        AppLogger.writeLog(
+            "Breath test finished (\(didSucceed ? "Success" : "Timeout")). Queueing \(Int(AppConfig.postTestPurgeDuration))s active moisture purge..."
+        )
+
         let purgeWorkItem = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
-            
+
             AppLogger.writeLog("Activating active purge...")
             self.sendMesoNoseCommand(.setActiveSamplingMode)
-            
+
             let revertWorkItem = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
                 // Revert hardware mode to ULP without clearing the timeout/completed UI state
                 self.sendMesoNoseCommand(.setUltraLowSamplingMode)
-                AppLogger.writeLog("Post-test purge completed. Hardware reverted to ULP mode (5m).")
+                AppLogger.writeLog(
+                    "Post-test purge completed. Hardware reverted to ULP mode (5m)."
+                )
             }
-            
+
             self.postTestPurgeWorkItem = revertWorkItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + AppConfig.postTestPurgeDuration, execute: revertWorkItem)
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + AppConfig.postTestPurgeDuration,
+                execute: revertWorkItem
+            )
         }
-        
+
         self.postTestPurgeWorkItem = purgeWorkItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + AppConfig.firmwareTeardownDelay, execute: purgeWorkItem)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + AppConfig.firmwareTeardownDelay,
+            execute: purgeWorkItem
+        )
     }
 }
 
