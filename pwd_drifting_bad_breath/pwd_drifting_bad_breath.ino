@@ -68,8 +68,8 @@ constexpr uint32_t POLL_TICK_DELAY_MS         = 20;
 // Physical Thresholds & Evaluation Constants
 // -------------------------------------------------------------------
 constexpr float BREATH_FRESH_MAX_DROP_PCT       = 15.0f;  
-constexpr float BREATH_MILD_MAX_DROP_PCT        = 35.0f;  
-constexpr float BREATH_SIGNIFICANT_MAX_DROP_PCT = 55.0f;  
+constexpr float BREATH_SIGNIFICANT_MAX_DROP_PCT = 45.0f; // Adjusted to match matrix (45%)
+constexpr float SELECTIVITY_RATIO_MALODOR_THRESHOLD = 0.5f; // Boundary between aromatics (<0.5) and VSCs (>=0.5)
 
 // Dry Mouth Evaluation Thresholds
 constexpr float DRY_MOUTH_MAX_DELTA_RH_PCT      = 2.5f;   // Max moisture gain (%) to qualify as dry mouth
@@ -96,19 +96,21 @@ bool systemReady = false;
 // -------------------------------------------------------------------
 // Result Classification String Constants
 // -------------------------------------------------------------------
-constexpr const char* RESULT_NONE                   = "NONE";
-constexpr const char* RESULT_DRY_MOUTH_HYDRATE      = "DRY_MOUTH_HYDRATE";
-constexpr const char* RESULT_BALANCED_BREATH        = "BALANCED_BREATH";
-constexpr const char* RESULT_NOTICEABLE_BREATH_ODOR  = "NOTICEABLE_BREATH_ODOR";
-constexpr const char* RESULT_STRONG_BREATH_ODOR      = "STRONG_BREATH_ODOR";
-
+constexpr const char* RESULT_NONE                        = "NONE";
+constexpr const char* RESULT_DRY_MOUTH_HYDRATE           = "DRY_MOUTH_HYDRATE";          
+constexpr const char* RESULT_DRY_MOUTH_VSC_BUILDUP       = "DRY_MOUTH_VSC_BUILDUP";      
+constexpr const char* RESULT_SETTLE_BEVERAGE_FOOD_ODOR   = "SETTLE_BEVERAGE_FOOD_ODOR";  
+constexpr const char* RESULT_BALANCED_BREATH             = "BALANCED_BREATH";             
+constexpr const char* RESULT_SOME_BEVERAGE_FOOD_ODOR     = "SOME_BEVERAGE_FOOD_ODOR";    
+constexpr const char* RESULT_NOTICEABLE_MALODOR          = "NOTICEABLE_MALODOR";          
+constexpr const char* RESULT_STRONG_MALODOR              = "STRONG_MALODOR";
 // -------------------------------------------------------------------
 // Baseline Batch & Trimming Constants
 // -------------------------------------------------------------------
-constexpr uint8_t  BASELINE_TARGET_SAMPLE_COUNT    = 4;             // Target samples captured for trimmed mean
-constexpr uint32_t BASELINE_CAPTURE_TIMEOUT_MS     = 20000UL;       // Max wait window for batch collection (20s)
-constexpr uint8_t  MIN_SAMPLES_TO_TRIM_HIGH        = 3;             // Min samples needed to strip highest transient spike
-constexpr uint8_t  MIN_SAMPLES_TO_TRIM_LOW         = 4;             // Min samples needed to strip lowest anomaly
+constexpr uint8_t  BASELINE_TARGET_SAMPLE_COUNT    = 10;            // 10 samples for robust trimmed average
+constexpr uint32_t BASELINE_CAPTURE_TIMEOUT_MS     = 100000UL;      // 100s window (3.3x headroom over 30s collection time)
+constexpr uint8_t  MIN_SAMPLES_TO_TRIM_HIGH        = 3;             // Strips highest transient spike
+constexpr uint8_t  MIN_SAMPLES_TO_TRIM_LOW         = 4;             // Strips lowest anomaly
 constexpr float    MAX_VALID_BASELINE_GAS_RES      = 800000.0f;     // 800 k-Ohm ceiling (accepts resting ~130k-300k, rejects transients)
 constexpr float    ROOM_AIR_MAX_CO2_PPM            = 1200.0f;       // Max ambient CO2 safety limit
 
@@ -125,6 +127,7 @@ volatile bool newGasDataAvailable = false;
 volatile bool pendingBreathCommand = false; 
 volatile bool pendingFlush = false;
 uint8_t bmeI2cAddr = BME68X_I2C_ADDR_HIGH;
+float selectivityRatio = 1.0f;
 
 // -------------------------------------------------------------------
 // Offline Accumulation Variables (Rate Limited to 5 Minutes)
@@ -147,6 +150,7 @@ struct SensorData {
   float currentCO2 = 0.0f;        
   uint8_t bsecAccuracy = 0;       
   float deltaDrop = 0.0f;
+  float selectivityRatio = 1.0f;
   long rBreathMin = 0;
   String ptcResult = RESULT_NONE;
   uint8_t batteryPct = 100; 
@@ -160,6 +164,7 @@ struct SensorData {
     json += "\"co2\":" + String((int)currentCO2) + ",";
     json += "\"battery\":" + String(batteryPct) + ",";
     json += "\"breath_drop_delta\":" + String(deltaDrop, 1) + ",";
+    json += "\"selectivity_ratio\":" + String(selectivityRatio, 2) + ",";
     json += "\"breath_min\":" + String(rBreathMin) + ",";
     json += "\"ptc_result\":\"" + ptcResult + "\"";
     json += "}";
@@ -185,7 +190,7 @@ Bsec2 bsec;
 NimBLEServer *pServer = NULL;
 NimBLECharacteristic *pCharacteristic = NULL;
 
-// Forward Declarations
+/// Forward Declarations
 static void clearI2CBus();
 void setBsecProfile(BsecProfile profile);
 void adjustAdvertisingPower(bool newlyDisconnected);
@@ -195,7 +200,7 @@ void enterLightSleep(uint64_t sleepTimeMs);
 void performWarmup();
 bool prepareAndCaptureBaseline(float &outBaselineRes, float &outBaseHumidity, float &outBaseTemp, float &outBaseCO2);
 bool waitAndCaptureBreath(float baseRes, float baseHumidity, float baseTemp, float baseCO2, float &outMinRes, float &outMaxDeltaRH, float &outMaxDeltaCO2);
-String evaluateBreathResult(float deltaDrop, float maxDeltaHumidity, float maxDeltaCO2);
+String evaluateBreathResult(float deltaDrop, float maxDeltaHumidity, float maxDeltaCO2, float selectivityRatio);
 uint8_t readBatteryPercentage();
 void runBreathSequence();
 void printStoredFileToSerial();
@@ -320,16 +325,19 @@ void performWarmup() {
   }
 }
 
+static void softResetBme688Sensor() {
+  Wire.beginTransmission(bmeI2cAddr);
+  Wire.write(0xE0); // BME68X_REG_RESET
+  Wire.write(0xB6); // BME68X_SOFT_RESET_CMD
+  Wire.endTransmission();
+  vTaskDelay(pdMS_TO_TICKS(10)); // Allow ASIC to reboot
+}
+
 void setBsecProfile(BsecProfile profile) {
   if (currentProfile == profile) return;
 
   newGasDataAvailable = false;
-
-  Wire.end();
-  clearI2CBus(); 
-  Wire.begin(I2C_SDA, I2C_SCL);
-  Wire.setClock(I2C_CLOCK_SPEED_HZ);
-  Wire.setTimeOut(1000);
+  softResetBme688Sensor();
 
   if (profile == PROFILE_OFF) {
     bsec.updateSubscription(sensorList, numSensors, BSEC_SAMPLE_RATE_DISABLED);
@@ -1043,9 +1051,9 @@ static void processBreathTestResults(float baseRes, float minRes, float maxDelta
 
   sensorData.deltaDrop = deltaDrop;
   sensorData.rBreathMin = (long)minRes;
+  sensorData.selectivityRatio = selectivityRatio;
   
-  // Updated camelCase method call
-  sensorData.ptcResult = evaluateBreathResult(deltaDrop, maxDeltaHumidity, maxDeltaCO2);
+  sensorData.ptcResult = evaluateBreathResult(deltaDrop, maxDeltaHumidity, maxDeltaCO2, selectivityRatio);
 
   dispatchData("{\"status\":\"" + String(STATUS_BREATH_TEST_COMPLETE) + "\"}");
   dispatchData(sensorData.toJsonString());
@@ -1071,7 +1079,6 @@ void runBreathSequence() {
     return;
   }
 
-  // Start tracking minimum resistance from the captured baseline
   float minRes = baseRes;
 
   bool breathDetected = waitAndCaptureBreath(baseRes, baseHumidity, baseTemp, baseCO2, 
@@ -1110,25 +1117,60 @@ void printStoredFileToSerial() {
   file.close();
 }
 
-String evaluateBreathResult(float deltaDrop, float maxDeltaHumidity, float maxDeltaCO2) {
-  // 1. Dry mouth scenario
-  if (maxDeltaHumidity < DRY_MOUTH_MAX_DELTA_RH_PCT && 
-     (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT || maxDeltaCO2 >= DRY_MOUTH_MIN_DELTA_CO2_PPM)) {
-    return RESULT_DRY_MOUTH_HYDRATE; 
+String evaluateBreathResult(float deltaDrop, float maxDeltaHumidity, float maxDeltaCO2, float selectivityRatio) {
+  // 1. Moisture Condition Variables
+  const bool isDryMouth = (maxDeltaHumidity < DRY_MOUTH_MAX_DELTA_RH_PCT) && 
+                          (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT || maxDeltaCO2 >= DRY_MOUTH_MIN_DELTA_CO2_PPM);
+  const bool validMoisture = (maxDeltaHumidity >= DRY_MOUTH_MAX_DELTA_RH_PCT);
+
+  // 2. Selectivity Ratio Variables
+  const bool isMalodorRatio = (selectivityRatio >= SELECTIVITY_RATIO_MALODOR_THRESHOLD);       // Ratio >= 0.5 (Sulfur / VSCs)
+  const bool isBeverageFoodRatio = (selectivityRatio < SELECTIVITY_RATIO_MALODOR_THRESHOLD);  // Ratio < 0.5  (Aromatics)
+
+  // 3. Gas Resistance Drop Threshold Variables
+  const bool isSubThresholdDrop = (deltaDrop < BREATH_FRESH_MAX_DROP_PCT);                      // ΔDrop < 15%
+  const bool isSlightDrop = (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT);                          // ΔDrop >= 15%
+  const bool isModerateDrop = (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT) && 
+                              (deltaDrop < BREATH_SIGNIFICANT_MAX_DROP_PCT);                    // 15% <= ΔDrop < 45%
+  const bool isSevereDrop = (deltaDrop >= BREATH_SIGNIFICANT_MAX_DROP_PCT);                    // ΔDrop >= 45%
+
+  // --- ROW 1: DRY MOUTH (LOW VSCs) ---
+  if (isDryMouth && isBeverageFoodRatio) {
+    return RESULT_DRY_MOUTH_HYDRATE;
   }
 
-  // 2. Normal / Balanced breath
-  if (deltaDrop < BREATH_FRESH_MAX_DROP_PCT) {
-    return RESULT_BALANCED_BREATH; 
+  // --- ROW 2: DRY MOUTH (ACTIVE VSC BUILDUP) ---
+  if (isDryMouth && isMalodorRatio) {
+    return RESULT_DRY_MOUTH_VSC_BUILDUP;
   }
 
-  // 3. Noticeable breath odor
-  if (deltaDrop < BREATH_SIGNIFICANT_MAX_DROP_PCT) {
-    return RESULT_NOTICEABLE_BREATH_ODOR;
+  // --- ROW 3: LINGERING/SETTLING BEVERAGE/FOOD (ΔRH >= 2.5%, ΔDROP < 15%, RATIO < 0.5) ---
+  if (validMoisture && isSubThresholdDrop && isBeverageFoodRatio) {
+    return RESULT_SETTLE_BEVERAGE_FOOD_ODOR;
   }
 
-  // 4. Strong breath odor
-  return RESULT_STRONG_BREATH_ODOR;
+  // --- ROW 4: BALANCED BREATH (ΔRH >= 2.5%, ΔDROP < 15%) ---
+  if (validMoisture && isSubThresholdDrop) {
+    return RESULT_BALANCED_BREATH;
+  }
+
+  // --- ROW 5: SOME BEVERAGE / FOOD ODOR (ΔRH >= 2.5%, ΔDROP >= 15%, RATIO < 0.5) ---
+  if (validMoisture && isSlightDrop && isBeverageFoodRatio) {
+    return RESULT_SOME_BEVERAGE_FOOD_ODOR;
+  }
+
+  // --- ROW 6: NOTICEABLE MALODOR (ΔRH >= 2.5%, 15% <= ΔDROP < 45%, RATIO >= 0.5) ---
+  if (validMoisture && isModerateDrop && isMalodorRatio) {
+    return RESULT_NOTICEABLE_MALODOR;
+  }
+
+  // --- ROW 7: STRONG MALODOR (ΔRH >= 2.5%, ΔDROP >= 45%, RATIO >= 0.5) ---
+  if (validMoisture && isSevereDrop && isMalodorRatio) {
+    return RESULT_STRONG_MALODOR;
+  }
+
+  // --- SAFEGUARD FALLBACK ---
+  return RESULT_NONE;
 }
 
 uint8_t readBatteryPercentage() {
