@@ -59,8 +59,8 @@ constexpr uint32_t NOTIFY_LP_INTERVAL_MS      = 3000;   // 3 seconds (LP mode)
 constexpr uint32_t NOTIFY_ULP_INTERVAL_MS     = 300000; // 5 minutes (ULP mode)
 constexpr uint32_t WARMUP_SHORT_DELAY_MS      = 4000;   // 4 seconds sensor thermal stabilization
 constexpr uint32_t WARMUP_LONG_DELAY_MS       = 15000;  // 15 seconds sensor thermal stabilization
-constexpr uint32_t BREATH_WAIT_TIMEOUT_MS     = 10000;  // 10 seconds to wait for blow start
-constexpr uint32_t BREATH_SENSING_WINDOW_MS   = 3500;   // 3.5 seconds to capture minimum VOC nadir
+constexpr uint32_t BREATH_WAIT_TIMEOUT_MS     = 30000;  // Extended to 30 seconds wait window
+constexpr uint32_t BREATH_SENSING_WINDOW_MS   = 30000;   // 30 seconds to capture minimum VOC nadir
 constexpr uint32_t LOOP_TICK_DELAY_MS         = 20;     
 constexpr uint32_t POLL_TICK_DELAY_MS         = 20;     
 
@@ -104,15 +104,37 @@ constexpr const char* RESULT_BALANCED_BREATH             = "BALANCED_BREATH";
 constexpr const char* RESULT_SOME_BEVERAGE_FOOD_ODOR     = "SOME_BEVERAGE_FOOD_ODOR";    
 constexpr const char* RESULT_NOTICEABLE_MALODOR          = "NOTICEABLE_MALODOR";          
 constexpr const char* RESULT_STRONG_MALODOR              = "STRONG_MALODOR";
+
 // -------------------------------------------------------------------
 // Baseline Batch & Trimming Constants
 // -------------------------------------------------------------------
 constexpr uint8_t  BASELINE_TARGET_SAMPLE_COUNT    = 10;            // 10 samples for robust trimmed average
 constexpr uint32_t BASELINE_CAPTURE_TIMEOUT_MS     = 100000UL;      // 100s window (3.3x headroom over 30s collection time)
-constexpr uint8_t  MIN_SAMPLES_TO_TRIM_HIGH        = 3;             // Strips highest transient spike
-constexpr uint8_t  MIN_SAMPLES_TO_TRIM_LOW         = 4;             // Strips lowest anomaly
-constexpr float    MAX_VALID_BASELINE_GAS_RES      = 800000.0f;     // 800 k-Ohm ceiling (accepts resting ~130k-300k, rejects transients)
-constexpr float    ROOM_AIR_MAX_CO2_PPM            = 1200.0f;       // Max ambient CO2 safety limit
+
+
+// -------------------------------------------------------------------
+// Tier 1: Hardware & I2C Bus Sanity Caps (Absolute Electrical Boundaries)
+// -------------------------------------------------------------------
+constexpr float HW_MIN_SENSOR_GAS_RES          = 5000.0f;     // < 5 kΩ = Short circuit / sensor damage
+constexpr float HW_MAX_SENSOR_GAS_RES          = 1000000.0f;  // > 1 MΩ = I2C disconnection / float bus noise
+
+// -------------------------------------------------------------------
+// Tier 2: Thermal Profile Baseline Filters (Stable CONT_1S Window)
+// -------------------------------------------------------------------
+constexpr float BASELINE_STABLE_MIN_GAS_RES    = 30000.0f;    // < 30 kΩ = Pre-contaminated ambient air
+constexpr float BASELINE_STABLE_MAX_GAS_RES    = 350000.0f;   // > 350 kΩ = Cold-start hotplate transient spike
+
+// -------------------------------------------------------------------
+// Baseline Environmental CO2 Quality Bounds
+// -------------------------------------------------------------------
+constexpr float BASELINE_MIN_VALID_CO2_PPM     = 350.0f;      // Nominal fresh outdoor air floor (~400 ppm)
+constexpr float BASELINE_MAX_VALID_CO2_PPM     = 2000.0f;     // Max allowable ambient indoor CO2
+
+// -------------------------------------------------------------------
+// Multi-Step Gas Heater Step Tracking Variables
+// -------------------------------------------------------------------
+float gasResLowTemp  = 0.0f; // Resistance measured at Low Temp (~200°C–250°C)
+float gasResHighTemp = 0.0f; // Resistance measured at High Temp (~350°C–400°C)
 
 enum OperationMode { MODE_IDLE, MODE_DRY_AIR_DETECTION, MODE_BREATH_TEST };
 enum BsecProfile { PROFILE_OFF, PROFILE_ULP_300S, PROFILE_LP_3S };
@@ -368,6 +390,33 @@ void setBsecProfile(BsecProfile profile) {
   vTaskDelay(pdMS_TO_TICKS(100));
 }
 
+void updateSelectivityRatio(float rawGasRes, uint8_t heaterStep) {
+  // Step 0 = High Temp (~350°C - 400°C)
+  // Step 1 = Low Temp (~200°C - 250°C)
+  if (heaterStep == 0) {
+    gasResHighTemp = rawGasRes;
+  } else if (heaterStep == 1) {
+    gasResLowTemp = rawGasRes;
+  }
+
+  // Compute ratio using R_low / R_high when both readings are valid (> 0)
+  if (gasResLowTemp > 5000.0f && gasResHighTemp > 5000.0f) {
+    // R_low / R_high * 100
+    float rawRatio = (gasResLowTemp / gasResHighTemp); 
+
+    // Safety clamping
+    if (rawRatio < 0.0f) rawRatio = 0.0f;
+    if (rawRatio > 2.0f) rawRatio = 2.0f;
+
+    selectivityRatio = rawRatio;
+
+#if ENABLE_SERIAL_LOGS
+    Serial.printf("[SELECTIVITY]: R_Low = %.0f, R_High = %.0f | Ratio = %.2f\n",
+                  gasResLowTemp, gasResHighTemp, selectivityRatio);
+#endif
+  }
+}
+
 void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsec) {
   if (!outputs.nOutputs) return;
 
@@ -385,9 +434,9 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
         }
         break;
       case BSEC_OUTPUT_RAW_HUMIDITY:
-      if (sensorData.currentHumidity == 0.0f) {
-        sensorData.currentHumidity = output.signal;
-      }
+        if (sensorData.currentHumidity == 0.0f) {
+          sensorData.currentHumidity = output.signal;
+        }
         break;
       case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:        
         sensorData.currentHumidity = output.signal;        
@@ -398,8 +447,11 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
       case BSEC_OUTPUT_RAW_GAS:
         sensorData.currentGasRes = output.signal;
         newGasDataAvailable = true;
+        updateSelectivityRatio(data.gas_resistance, data.gas_index);
+
 #if ENABLE_SERIAL_LOGS
-        Serial.printf("[BSEC TRACE]: Raw Gas Sample = %.0f Ohm | Accuracy = %d\n", output.signal, output.accuracy);
+        Serial.printf("[BSEC TRACE]: Raw Gas Sample = %.0f Ohm | Step = %d | Accuracy = %d\n", 
+                      output.signal, data.gas_index, output.accuracy);
 #endif
         break;
       case BSEC_OUTPUT_CO2_EQUIVALENT:
@@ -739,150 +791,71 @@ void adjustAdvertisingPower(bool newlyDisconnected) {
   }
 }
 
-// ===================================================================
-// BSEC BASELINE & BREATH CAPTURE HELPERS (WIND-RESISTANT FUSION)
-// ===================================================================
-
-struct SampleFrame {
-  float gasRes;
-  float humidity;
-  float temp;
-  float co2;
-};
-
-// 1. Helper: Polls sensor and collects raw sample frames until target or timeout
-static std::vector<SampleFrame> fetchRawBaselineSamples(uint8_t targetSamples, uint32_t timeoutMs) {
-  std::vector<SampleFrame> samples;
-  samples.reserve(targetSamples);
-
+// Main: Trims transient anomalies and computes baseline averages
+uint8_t collectBaselineSamples(float &sumRes, float &sumHumidity, float &sumTemp, float &sumCO2, 
+                               uint8_t targetCount, uint32_t timeoutMs) {
+  uint8_t validCount = 0;
   uint32_t startMs = millis();
-  uint32_t lastDiagMs = millis();
-  uint32_t runCalls = 0;
-  newGasDataAvailable = false;
+  
+  setBsecProfile(PROFILE_LP_3S);
+  vTaskDelay(pdMS_TO_TICKS(100));
 
-  logMessage("[BASELINE TRACE @ " + String(startMs) + "ms]: Starting batch fetch for " + String(targetSamples) + " samples...");
-
-  while (samples.size() < targetSamples && (millis() - startMs) < timeoutMs) {
-    if (bsecReady) {
-      runCalls++;
-      bsec.run();
-
-      // Auto-recover if I2C bus fails (sensor.status < 0, e.g. -2)
-      if (bsec.sensor.status < 0) {
-        logMessage("[ERROR]: I2C bus error detected (sensor.status=" + String(bsec.sensor.status) + "). Recovering bus...");
-        Wire.end();
-        clearI2CBus();
-        vTaskDelay(pdMS_TO_TICKS(20));
-        Wire.begin(I2C_SDA, I2C_SCL);
-        Wire.setClock(I2C_CLOCK_SPEED_HZ);
-        bsec.begin(bmeI2cAddr, Wire);
-        bsec.attachCallback(newDataCallback);
-        bsec.updateSubscription(sensorList, numSensors, BSEC_SAMPLE_RATE_LP);
-      }
-    }
-
+  while (validCount < targetCount && (millis() - startMs < timeoutMs)) {
+    bsec.run();
     if (newGasDataAvailable) {
       newGasDataAvailable = false;
+      float rawRes = sensorData.currentGasRes;
 
-      if (sensorData.currentGasRes > 0.0f && sensorData.currentGasRes <= MAX_VALID_BASELINE_GAS_RES) {
-        samples.push_back({
-          sensorData.currentGasRes,
-          sensorData.currentHumidity,
-          sensorData.currentTemp,
-          sensorData.currentCO2
-        });
+      // Filter Condition Evaluation
+      bool isBusFaultTransient = (rawRes < HW_MIN_SENSOR_GAS_RES) || (rawRes > HW_MAX_SENSOR_GAS_RES);
+      bool isThermalUnstable   = (rawRes < BASELINE_STABLE_MIN_GAS_RES) || (rawRes > BASELINE_STABLE_MAX_GAS_RES);
 
-        logMessage("[BASELINE TRACE]: Valid Sample " + String(samples.size()) + "/" + String(targetSamples) + 
-                   " = " + String(sensorData.currentGasRes, 0) + " Ohm (t=" + String(millis() - startMs) + "ms)");
-      } 
-      else if (sensorData.currentGasRes > MAX_VALID_BASELINE_GAS_RES) {
-        logMessage("[BASELINE TRACE]: Discarded transient reading: " + 
-                   String(sensorData.currentGasRes, 0) + " Ohm (exceeds " + String((long)MAX_VALID_BASELINE_GAS_RES) + " Ohm)");
+      // Tier 1: Electrical / I2C Bus Fault Check
+      if (isBusFaultTransient) {
+        logMessage("[HARDWARE ERROR]: Bus fault reading discarded: " + String(rawRes) + " Ohm");
+        continue;
       }
-    }
 
-    if (millis() - lastDiagMs >= 1000UL) {
-      lastDiagMs = millis();
-      logMessage("[DIAG BASELINE @ " + String(millis() - startMs) + "ms]" +
-                 " samples: " + String(samples.size()) + "/" + String(targetSamples) +
-                 " | run() calls: " + String(runCalls) + 
-                 " | bsec.status: " + String(bsec.status) + 
-                 " | sensor.status: " + String(bsec.sensor.status));
-    }
+      // Tier 2: Thermal Profile Stabilization Check
+      if (isThermalUnstable) {
+        logMessage("[WARMUP TRANSIENT]: Skipping un-stabilized frame: " + String(rawRes) + " Ohm");
+        continue;
+      }
 
+      // Valid frame: Accumulate data
+      sumRes      += rawRes;
+      sumHumidity += sensorData.currentHumidity;
+      sumTemp     += sensorData.currentTemp;
+      sumCO2      += sensorData.currentCO2;
+      validCount++;
+    }
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
-
-  return samples;
-}
-
-// 2. Main: Trims transient anomalies and computes baseline averages
-static uint8_t collectBaselineSamples(float &outSumRes, float &outSumHumidity, float &outSumTemp, float &outSumCO2, 
-                                       uint8_t targetSamples, uint32_t timeoutMs) {
-  logMessage("[BASELINE TRACE]: Gathering batch for statistical baseline filtering...");
-
-  // Step 1: Collect raw sample batch
-  std::vector<SampleFrame> samples = fetchRawBaselineSamples(targetSamples, timeoutMs);
-
-  if (samples.empty()) {
-    logMessage("[BASELINE TRACE]: Collection timed out with 0 samples.");
-    return 0;
-  }
-
-  // Step 2: Sort samples ascending by gas resistance
-  std::sort(samples.begin(), samples.end(), [](const SampleFrame &a, const SampleFrame &b) {
-    return a.gasRes < b.gasRes;
-  });
-
-  // Step 3: Determine index bounds to trim high/low transient spikes
-  size_t startIdx = 0;
-  size_t endIdx = samples.size();
-
-  if (samples.size() >= MIN_SAMPLES_TO_TRIM_HIGH) {
-    endIdx--; // Drop highest transient hotplate spike
-    logMessage("[BASELINE TRACE]: Discarded high transient (" + String(samples.back().gasRes, 0) + " Ohm)");
-  }
-  if (samples.size() >= MIN_SAMPLES_TO_TRIM_LOW) {
-    startIdx++; // Drop lowest anomaly
-    logMessage("[BASELINE TRACE]: Discarded low anomaly (" + String(samples.front().gasRes, 0) + " Ohm)");
-  }
-
-  // Step 4: Accumulate remaining clean samples
-  outSumRes = 0.0f; 
-  outSumHumidity = 0.0f; 
-  outSumTemp = 0.0f; 
-  outSumCO2 = 0.0f;
-  
-  uint8_t validCount = 0;
-  for (size_t i = startIdx; i < endIdx; i++) {
-    outSumRes      += samples[i].gasRes;
-    outSumHumidity += samples[i].humidity;
-    outSumTemp     += samples[i].temp;
-    outSumCO2      += samples[i].co2;
-    validCount++;
-  }
-
-  logMessage("[BASELINE TRACE]: Averaged " + String(validCount) + " clean samples (Clean Baseline = " + 
-             String(outSumRes / validCount, 0) + " Ohm)");
 
   return validCount;
 }
 
 
 // Validate baseline data quality and environmental safety bounds
-static bool validateBaselineQuality(float baselineRes, float baseCO2) {
-  if (baselineRes <= 0.0f) {
-    logMessage("[WARNING]: Baseline aborted — invalid gas resistance acquired.");
+bool validateBaselineQuality(float avgRes, float avgCO2) {
+  // Evaluation flags for averaged sensor readings
+  bool isResOutOfBounds  = (avgRes < BASELINE_STABLE_MIN_GAS_RES) || (avgRes > BASELINE_STABLE_MAX_GAS_RES);
+  bool isCO2OutOfBounds  = (avgCO2 < BASELINE_MIN_VALID_CO2_PPM)  || (avgCO2 > BASELINE_MAX_VALID_CO2_PPM);
+  bool isBaselineInvalid = isResOutOfBounds || isCO2OutOfBounds;
+
+  if (isBaselineInvalid) {
+    if (isResOutOfBounds) {
+      logMessage("[ERROR]: Averaged baseline resistance out of stable bounds: " + String(avgRes, 0) + " Ohm");
+    }
+    if (isCO2OutOfBounds) {
+      logMessage("[ERROR]: Averaged baseline CO2 out of valid bounds: " + String(avgCO2, 0) + " ppm");
+    }
     dispatchData("{\"state\":\"" + String(STATE_TRY_AGAIN_LATER) + "\"}");
     return false;
   }
 
-  if (baseCO2 > ROOM_AIR_MAX_CO2_PPM) {
-    logMessage("[WARNING]: Baseline aborted due to high background VOC/CO2 levels.");
-    dispatchData("{\"state\":\"" + String(STATE_ROOM_AIR_DIRTY) + "\"}");
-    return false;
-  }
-
+  logMessage("[BASELINE LOCKED]: Avg Res = " + String(avgRes, 0) + 
+             " Ohm | Avg CO2 = " + String(avgCO2, 0) + " ppm");
   return true;
 }
 
@@ -978,47 +951,86 @@ bool waitForBreathExhalation(float baseGasRes, float baseHumidity, float baseTem
   return false;
 }
 
-void captureBreathSensingWindow(float baseHumidity, float baseCO2, float &outMinRes, float &outMaxDeltaRH, float &outMaxDeltaCO2) {
+// -------------------------------------------------------------------
+// Helper 1: Evaluates if an incoming sensor frame qualifies as an active blow
+// -------------------------------------------------------------------
+static bool isFrameValidExhalation(float currentGasRes, float deltaRH, float gasDropPct) {
+  const bool isSensorReadingValid = (currentGasRes > HW_MIN_SENSOR_GAS_RES);
+  const bool hasMoistureSpike     = (deltaRH >= DRY_MOUTH_MAX_DELTA_RH_PCT);
+  const bool hasGasDropSpike      = (gasDropPct >= BREATH_FRESH_MAX_DROP_PCT);
+  const bool isExhalationActive   = (hasMoistureSpike || hasGasDropSpike);
+
+  return isSensorReadingValid && isExhalationActive;
+}
+
+// -------------------------------------------------------------------
+// Helper 2: Process frame — updates peak deltas and tracks lowest gas resistance nadir
+// -------------------------------------------------------------------
+static void processExhalationFrame(float baseRes, float baseHumidity, float baseCO2,
+                                   float &outMinRes, float &outMaxDeltaRH, float &outMaxDeltaCO2) {
+  const float currentGasRes = sensorData.currentGasRes;
+  const float deltaRH       = sensorData.currentHumidity - baseHumidity;
+  const float deltaCO2      = sensorData.currentCO2 - baseCO2;
+  const float gasDropPct    = (baseRes > 0.0f) ? ((baseRes - currentGasRes) / baseRes) * 100.0f : 0.0f;
+
+  const bool isValidExhalation = isFrameValidExhalation(currentGasRes, deltaRH, gasDropPct);
+
+  if (isValidExhalation) {
+    if (currentGasRes < outMinRes) {
+      outMinRes = currentGasRes;
+      logMessage("[NEW BREATH MINIMUM]: " + String(outMinRes, 0) + " Ohm | dRH: " + String(deltaRH, 1) + "%");
+    }
+  }
+
+  // Update running peak deltas across all frames in the window
+  const bool isNewRHPeak  = (deltaRH > outMaxDeltaRH);
+  const bool isNewCO2Peak = (deltaCO2 > outMaxDeltaCO2);
+
+  if (isNewRHPeak)  outMaxDeltaRH  = deltaRH;
+  if (isNewCO2Peak) outMaxDeltaCO2 = deltaCO2;
+}
+
+// -------------------------------------------------------------------
+// Main Sensing Window Runner
+// -------------------------------------------------------------------
+void captureBreathSensingWindow(float baseRes, float baseHumidity, float baseCO2, 
+                                float &outMinRes, float &outMaxDeltaRH, float &outMaxDeltaCO2) {
   dispatchData("{\"state\":\"" + String(STATE_TESTING_SENSING_BREATH) + "\"}");
   vTaskDelay(pdMS_TO_TICKS(50));
 
-  uint32_t blowWindowStart = millis();
+  const uint32_t windowStartMs = millis();
   newGasDataAvailable = false;
+  outMinRes = baseRes; // Initialize minimum resistance with baseline
 
-  while ((millis() - blowWindowStart) < BREATH_SENSING_WINDOW_MS) {
+  while ((millis() - windowStartMs) < BREATH_SENSING_WINDOW_MS) {
     bsec.run();
 
     if (newGasDataAvailable) {
       newGasDataAvailable = false;
-
-      if (sensorData.currentGasRes > 0.0f && sensorData.currentGasRes < outMinRes) {
-        outMinRes = sensorData.currentGasRes;
-      }
-
-      float dRH = sensorData.currentHumidity - baseHumidity;
-      float dCO2 = sensorData.currentCO2 - baseCO2;
-
-      if (dRH > outMaxDeltaRH) outMaxDeltaRH = dRH;
-      if (dCO2 > outMaxDeltaCO2) outMaxDeltaCO2 = dCO2;
+      processExhalationFrame(baseRes, baseHumidity, baseCO2, outMinRes, outMaxDeltaRH, outMaxDeltaCO2);
     }
 
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
+
+  logMessage("[SENSING COMPLETE]: Lowest Breath Resistance = " + String(outMinRes, 0) + " Ohm");
 }
 
 bool waitAndCaptureBreath(float baseRes, float baseHumidity, float baseTemp, float baseCO2, 
-                          float &outMinRes, float &outMaxDeltaRH, float &outMaxDeltaCO2) {
-  outMinRes = baseRes;
+                          float &outAvgRes, float &outMaxDeltaRH, float &outMaxDeltaCO2) {
+  float tempMinRes = baseRes;
 
-  // Updated call passes all 7 required arguments
-  if (!waitForBreathExhalation(baseRes, baseHumidity, baseTemp, baseCO2, 
-                               outMinRes, outMaxDeltaRH, outMaxDeltaCO2)) {
+  const bool isExhalationDetected = waitForBreathExhalation(baseRes, baseHumidity, baseTemp, baseCO2, 
+                                                             tempMinRes, outMaxDeltaRH, outMaxDeltaCO2);
+
+  if (!isExhalationDetected) {
     setBsecProfile(PROFILE_LP_3S);
     return false;
   }
 
-  captureBreathSensingWindow(baseHumidity, baseCO2, outMinRes, outMaxDeltaRH, outMaxDeltaCO2);
-
+  // Captures and computes the average exhalation resistance across active blow frames
+  captureBreathSensingWindow(baseRes, baseHumidity, baseCO2, outAvgRes, outMaxDeltaRH, outMaxDeltaCO2);
+  
   setBsecProfile(PROFILE_LP_3S);
   return true;
 }
@@ -1049,6 +1061,19 @@ static void processBreathTestResults(float baseRes, float minRes, float maxDelta
     if (deltaDrop < 0.0f) deltaDrop = 0.0f;
   }
 
+  if (gasResLowTemp <= 5000.0f || gasResHighTemp <= 5000.0f) {
+    if (baseRes > 0.0f && minRes > 0.0f) {
+      selectivityRatio = minRes / baseRes;
+    } else {
+      selectivityRatio = 1.0f;
+    }
+  }
+
+  logMessage("[SELECTIVITY EVAL]: Base Res = " + String(baseRes, 0) + 
+             " Ohm | Min Breath Res = " + String(minRes, 0) + 
+             " Ohm | Ratio = " + String(selectivityRatio, 2));
+
+  sensorData.currentGasRes = minRes;
   sensorData.deltaDrop = deltaDrop;
   sensorData.rBreathMin = (long)minRes;
   sensorData.selectivityRatio = selectivityRatio;
@@ -1070,6 +1095,9 @@ void runBreathSequence() {
   currentMode = MODE_BREATH_TEST;
 
   executeBreathWarmup();
+  gasResLowTemp = 0.0f;
+  gasResHighTemp = 0.0f;
+  selectivityRatio = 1.0f;
 
   float baseRes = 0.0f, baseHumidity = 0.0f, baseTemp = 0.0f, baseCO2 = 0.0f;
   float maxDeltaRH = 0.0f, maxDeltaCO2 = 0.0f;
