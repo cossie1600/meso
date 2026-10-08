@@ -19,6 +19,7 @@ struct MesoNoseHistoryView: View {
                         systemImage: "wind",
                         description: Text("Waiting for data stream...")
                     )
+                    .foregroundStyle(Color.appSecondaryText)
                     .padding(.top, 40)
                 } else {
                     ForEach(bleManager.mesoNoseSamples) { sample in

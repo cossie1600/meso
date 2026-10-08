@@ -1,0 +1,29 @@
+# AI Context: Meso Nose Firmware Architectural Principles
+
+## Core Design Philosophy: Non-Destructive Scheduling & Zero Magic Numbers
+
+This document defines the strict architectural constraints, state transition guards, and formatting standards for the Meso Nose ESP32 firmware (`BME688` + `BSEC 2.x` + `NimBLE`).
+
+---
+
+### 1. Zero Magic Numbers Policy
+* **Rule**: Every duration (`_MS`), voltage (`_VOLTS`), threshold (`_PCT`, `_PPM`), buffer size, or hardware parameter MUST be declared as a strongly typed `constexpr` constant.
+* **Naming Standards**:
+  * Timing: `_MS`, `_US`, `_HZ`
+  * Voltage/ADC: `_VOLTS`, `_MV`, `_SAMPLES`, `_BITS`
+  * Boundaries/Thresholds: `_PCT`, `_PPM`, `_OAM`, `_THRESHOLD`, `_MIN`, `_MAX`
+* **Exemptions**: Idiomatic loop counters starting at `0`, standard string/char formatting buffers, bitwise mask shifts, or FreeRTOS task tick conversions (`pdMS_TO_TICKS`).
+
+---
+
+### 2. BSEC 2.x Non-Destructive Scheduler Management
+
+To avoid BSEC library deadlocks, silent callback drops, or timing desynchronization between ESP32 software uptime (`millis()`) and physical sensor hardware states:
+
+#### Principle A: No Forcing or Interruption
+* `setBsecProfile()` **MUST** respect active profile state checks:
+  ```cpp
+  if (currentProfile == profile) {
+      logMessage("[SET_PROFILE SKIPPED]: Target profile matches current profile.");
+      return;
+  }
