@@ -5,6 +5,7 @@
  */
 
 #include "diagnostics.h"
+#include "sensor_data.h"
 #include <Wire.h>
 #include "bsec2.h"
 
@@ -38,7 +39,7 @@ bool runSelectivityDiagnosticTest() {
   bool t5_pass = false;
 
   // -------------------------------------------------------------------
-  // Test 1: BSEC Object & Bus Verification (Safe non-disruptive check)
+  // Test 1: BSEC Object & Address Verification
   // -------------------------------------------------------------------
   logMessage("[DIAG 1/5]: Verifying BSEC Object and I2C status...");
   if (bsec != nullptr) {
@@ -49,7 +50,7 @@ bool runSelectivityDiagnosticTest() {
   }
 
   // -------------------------------------------------------------------
-  // Test 2: BSEC Background State & Accuracy Check
+  // Test 2: BSEC Internal State & Accuracy
   // -------------------------------------------------------------------
   logMessage("[DIAG 2/5]: Checking BSEC internal status and accuracy...");
   if (bsecReady && bsec->status == BSEC_OK) {
@@ -60,7 +61,7 @@ bool runSelectivityDiagnosticTest() {
   }
 
   // -------------------------------------------------------------------
-  // Test 3: Verify LP (3-Second) Profile
+  // Test 3: Verify LP (3-Second) Profile State
   // -------------------------------------------------------------------
   logMessage("[DIAG 3/5]: Verifying LP sampling profile subscription...");
   bool subSuccess = true;
@@ -88,7 +89,7 @@ bool runSelectivityDiagnosticTest() {
   
   newGasDataAvailable = false;
 
-  while ((millis() - startMs) < 60000) { // 60-second window is plenty once warmed up
+  while ((millis() - startMs) < 60000) {
     if (bsecReady && bsec != nullptr) {
       bsec->run();
     }
@@ -131,7 +132,7 @@ bool runSelectivityDiagnosticTest() {
   }
 
   // -------------------------------------------------------------------
-  // Summary Calculation
+  // Summary
   // -------------------------------------------------------------------
   uint32_t passCount = (t1_pass ? 1 : 0) + (t2_pass ? 1 : 0) + 
                        (t3_pass ? 1 : 0) + (t4_pass ? 1 : 0) + 

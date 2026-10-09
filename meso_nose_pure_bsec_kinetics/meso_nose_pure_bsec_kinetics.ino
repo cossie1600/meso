@@ -11,6 +11,7 @@
 #include "esp_pm.h"
 #include "esp_sleep.h"
 #include "bsec2.h"
+#include "sensor_data.h"
 #include "diagnostics.h"
 #include "bsec_iaq.h"
 
@@ -313,24 +314,31 @@ void captureRecoveryWindow(float minRes, float baseRes, float &outRecoveryLag) {
 }
 
 String evaluateBreathResult(float deltaDrop, float maxDeltaHumidity, float maxDeltaCO2, float recoveryLagSec) {
-  const bool isDryMouth = (maxDeltaHumidity < DRY_MOUTH_MAX_DELTA_RH_PCT) && (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT || maxDeltaCO2 >= DRY_MOUTH_MIN_DELTA_CO2_PPM);
+  const bool isDryMouth = (maxDeltaHumidity < DRY_MOUTH_MAX_DELTA_RH_PCT) && 
+                          (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT || maxDeltaCO2 >= DRY_MOUTH_MIN_DELTA_CO2_PPM);
   const bool validMoisture = (maxDeltaHumidity >= DRY_MOUTH_MAX_DELTA_RH_PCT);
 
-  const bool isMalodorRatio = (recoveryLagSec >= RECOVERY_LAG_MALODOR_THRESHOLD);
-  const bool isBeverageFoodRatio = (recoveryLagSec < RECOVERY_LAG_MALODOR_THRESHOLD);
+  const bool isSlowRecovery = (recoveryLagSec >= RECOVERY_LAG_MALODOR_THRESHOLD); // >= 3.5s
+  const bool isFastRecovery = (recoveryLagSec < RECOVERY_LAG_MALODOR_THRESHOLD);   // < 3.5s
 
-  const bool isSubThresholdDrop = (deltaDrop < BREATH_FRESH_MAX_DROP_PCT);
+  const bool isSubThresholdDrop = (deltaDrop < BREATH_FRESH_MAX_DROP_PCT); // < 15%
   const bool isSlightDrop = (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT);
   const bool isModerateDrop = (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT) && (deltaDrop < BREATH_SIGNIFICANT_MAX_DROP_PCT);
   const bool isSevereDrop = (deltaDrop >= BREATH_SIGNIFICANT_MAX_DROP_PCT);
 
-  if (isDryMouth && isBeverageFoodRatio) return RESULT_DRY_MOUTH_HYDRATE;
-  if (isDryMouth && isMalodorRatio) return RESULT_DRY_MOUTH_VSC_BUILDUP;
-  if (validMoisture && isSubThresholdDrop && isBeverageFoodRatio) return RESULT_SETTLE_BEVERAGE_FOOD_ODOR;
-  if (validMoisture && isSubThresholdDrop) return RESULT_BALANCED_BREATH;
-  if (validMoisture && isSlightDrop && isBeverageFoodRatio) return RESULT_SOME_BEVERAGE_FOOD_ODOR;
-  if (validMoisture && isModerateDrop && isMalodorRatio) return RESULT_NOTICEABLE_MALODOR;
-  if (validMoisture && isSevereDrop && isMalodorRatio) return RESULT_STRONG_MALODOR;
+  // Dry mouth conditions
+  if (isDryMouth && isFastRecovery) return RESULT_DRY_MOUTH_HYDRATE;
+  if (isDryMouth && isSlowRecovery) return RESULT_DRY_MOUTH_VSC_BUILDUP;
+
+  // Sub-threshold drop (< 15%) conditions
+  if (validMoisture && isSubThresholdDrop && isFastRecovery) return RESULT_BALANCED_BREATH;
+  if (validMoisture && isSubThresholdDrop && isSlowRecovery) return RESULT_SETTLE_BEVERAGE_FOOD_ODOR;
+
+  // Significant drop (>= 15%) conditions
+  if (validMoisture && isSlightDrop && isFastRecovery) return RESULT_SOME_BEVERAGE_FOOD_ODOR;
+  if (validMoisture && isModerateDrop && isSlowRecovery) return RESULT_NOTICEABLE_MALODOR;
+  if (validMoisture && isSevereDrop && isSlowRecovery) return RESULT_STRONG_MALODOR;
+
   return RESULT_NONE;
 }
 

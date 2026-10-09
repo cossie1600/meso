@@ -65,6 +65,8 @@ constexpr uint32_t BREATH_WAIT_TIMEOUT_MS = 30000;
 constexpr uint32_t BREATH_SENSING_WINDOW_MS = 10000; // 10 seconds 
 constexpr uint32_t LOOP_TICK_DELAY_MS = 20;
 constexpr uint32_t POLL_TICK_DELAY_MS = 20;
+constexpr uint32_t PARALLEL_MODE_SETTLE_DELAY_MS = 10;
+constexpr uint8_t  BME68X_MAX_HEATER_STEPS        = 10;
 constexpr uint32_t LOW_LEVEL_STEP_DELAY_MS = 150;
 
 constexpr uint32_t DIAG_LOG_INTERVAL_MS = 3000;
@@ -88,8 +90,8 @@ constexpr float HW_MAX_TRANSIENT_GAS_RES = 100000000.0f;
 
 constexpr float BASELINE_STABLE_MIN_GAS_RES = 5000.0f;
 constexpr float BASELINE_STABLE_MAX_GAS_RES = 100000000.0f; // Expanded to 100 Mohm
-constexpr uint8_t HEATER_STEP_200C_COOL_PLATE = 0; // Profile Step 0 (200°C - Low Temp / High Resistance)
-constexpr uint8_t HEATER_STEP_400C_HOT_PLATE  = 5; // Profile Step 5 (400°C - High Temp / Low Resistance)
+constexpr uint8_t HEATER_STEP_200C_COOL_PLATE = 0; // Profile Step 0 (200°C)
+constexpr uint8_t HEATER_STEP_400C_HOT_PLATE  = 5; // Profile Step 5 (400°C)
 
 constexpr float BASELINE_MIN_VALID_CO2_PPM = 350.0f;
 constexpr float BASELINE_MAX_VALID_CO2_PPM = 2000.0f;
@@ -97,11 +99,12 @@ constexpr float BASELINE_MAX_VALID_CO2_PPM = 2000.0f;
 constexpr float PARTIAL_EXHALATION_MIN_DELTA_RH_PCT = 0.8f;
 constexpr float PARTIAL_EXHALATION_MIN_DELTA_CO2_PPM = 100.0f;
 
-constexpr float EXHALATION_MIN_MOISTURE_DELTA_RH_PCT = 15.0f;
-constexpr float EXHALATION_MIN_TEMP_DELTA_C = 0.5f;
-constexpr float EXHALATION_MIN_CO2_DELTA_PPM = 100.0f;
-constexpr float EXHALATION_MIN_GAS_DROP_PCT = 10.0f;
-constexpr float EXHALATION_MAX_GAS_DROP_PCT = 95.0f;
+constexpr float EXHALATION_WARMING_GAS_DROP_GATE_PCT = 5.0f;
+constexpr float EXHALATION_MIN_MOISTURE_DELTA_RH_PCT = 20.0f;
+constexpr float EXHALATION_MIN_TEMP_DELTA_C          = 0.5f;
+constexpr float EXHALATION_MIN_CO2_DELTA_PPM         = 100.0f;
+constexpr float EXHALATION_MIN_GAS_DROP_PCT          = 8.0f;
+constexpr float EXHALATION_MAX_GAS_DROP_PCT          = 95.0f;
 
 constexpr float SELECTIVITY_MIN_VALID_GAS_RES = 5000.0f;
 constexpr float SELECTIVITY_RATIO_MIN = 0.0f;
@@ -132,8 +135,8 @@ constexpr const char *RESULT_SOME_BEVERAGE_FOOD_ODOR = "SOME_BEVERAGE_FOOD_ODOR"
 constexpr const char *RESULT_NOTICEABLE_MALODOR = "NOTICEABLE_MALODOR";
 constexpr const char *RESULT_STRONG_MALODOR = "STRONG_MALODOR";
 
-float rGas_at_200C_CoolPlate = 0.0f; // High physical resistance at 200°C
-float rGas_at_400C_HotPlate  = 0.0f; // Low physical resistance at 400°C
+float rGas_at_200C_CoolPlate = 0.0f;
+float rGas_at_400C_HotPlate  = 0.0f;
 
 enum OperationMode { MODE_IDLE,
                      MODE_DRY_AIR_DETECTION,
@@ -161,6 +164,7 @@ float accumHumidity = 0.0f;
 float accumPressure = 0.0f;
 float accumGasRes = 0.0f;
 int accumCount = 0;
+
 char pendingCmdBuf[32] = { 0 };
 volatile bool hasPendingCommand = false;
 
@@ -210,7 +214,7 @@ bsecSensor defaultSensorList[] = {
 uint8_t numDefaultSensors = sizeof(defaultSensorList) / sizeof(bsecSensor);
 
 Bsec2 *bsec = nullptr;
-Bme68x bme; // Official Bosch C++ Driver Instance
+Bme68x bme;
 
 NimBLEServer *pServer = NULL;
 NimBLECharacteristic *pCharacteristic = NULL;
@@ -372,23 +376,19 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
 }
 
 void updateSelectivityRatio(float rawGasRes, uint8_t currentHeaterStep) {
-  // 1. Capture physical resistance at 200°C (Step 0)
   if (currentHeaterStep == HEATER_STEP_200C_COOL_PLATE) {
     rGas_at_200C_CoolPlate = rawGasRes;
   } 
-  // 2. Capture physical resistance at 400°C (Step 5)
   else if (currentHeaterStep == HEATER_STEP_400C_HOT_PLATE) {
     rGas_at_400C_HotPlate = rawGasRes;
   }
 
-  // 3. Compute Selectivity Ratio: R(200°C) / R(400°C)
   const bool hasValidCoolPlateReading = (rGas_at_200C_CoolPlate > SELECTIVITY_MIN_VALID_GAS_RES);
   const bool hasValidHotPlateReading  = (rGas_at_400C_HotPlate > SELECTIVITY_MIN_VALID_GAS_RES);
 
   if (hasValidCoolPlateReading && hasValidHotPlateReading) {
     float rawRatio = rGas_at_200C_CoolPlate / rGas_at_400C_HotPlate;
 
-    // Clamp ratio within valid bounds
     if (rawRatio < SELECTIVITY_RATIO_MIN) rawRatio = SELECTIVITY_RATIO_MIN;
     if (rawRatio > SELECTIVITY_RATIO_MAX) rawRatio = SELECTIVITY_RATIO_MAX;
 
@@ -405,61 +405,87 @@ void updateSelectivityRatio(float rawGasRes, uint8_t currentHeaterStep) {
 // Official Bosch Bme68x Library Hardware Hand-Off
 // -------------------------------------------------------------------
 bool configureLowLevelParallelScan() {
-  logMessage("[DRIVER HAND-OFF]: Initializing Bosch bme68x C++ Class Driver...");
+  logMessage("[DRIVER HAND-OFF]: Initializing Bosch bme68x Class Driver...");
 
   bme.begin(bmeI2cAddr, Wire);
-  if (bme.checkStatus() < BME68X_OK) {
-    logMessage("[ERROR]: bme.begin() failed with status: " + String(bme.checkStatus()));
+  int8_t initStatus = bme.checkStatus();
+  logMessage("   [INIT STATUS]: bme.begin status = " + String(initStatus));
+
+  if (initStatus < BME68X_OK) {
+    logMessage("[ERROR]: bme.begin() failed with status: " + String(initStatus));
     return false;
   }
 
+  // 1. Configure TPH Oversampling & Filter
   bme.setTPH(BME68X_OS_2X, BME68X_OS_1X, BME68X_OS_2X);
   bme.setFilter(BME68X_FILTER_OFF);
 
-  forcedStepIndex = 0;
-  logMessage("[DRIVER HAND-OFF PASS]: Bosch Bme68x Driver configured cleanly.");
+  // 2. Load 10-step parallel profile (All multipliers set to 1)
+  uint16_t mulProf[BME68X_MAX_HEATER_STEPS] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+
+  // Calculate shared duration: step window (150ms) minus raw TPH measurement time
+  uint32_t measDurMs = bme.getMeasDur(BME68X_PARALLEL_MODE) / 1000UL;
+  uint16_t sharedHeatrDur = (LOW_LEVEL_STEP_DELAY_MS > measDurMs) 
+                            ? (uint16_t)(LOW_LEVEL_STEP_DELAY_MS - measDurMs) 
+                            : PARALLEL_MODE_SETTLE_DELAY_MS;
+
+  // setHeaterProf automatically enables the MOX heater circuit in C++ library
+  bme.setHeaterProf(bmeTempProf, mulProf, sharedHeatrDur, BME68X_MAX_HEATER_STEPS);
+  logMessage("   [PROFILE SETUP]: 10-step parallel profile loaded (measDur=" + String(measDurMs) + "ms, sharedDur=" + String(sharedHeatrDur) + "ms).");
+
+  // 3. Transition into PARALLEL_MODE
+  bme.setOpMode(BME68X_PARALLEL_MODE);
+  vTaskDelay(pdMS_TO_TICKS(PARALLEL_MODE_SETTLE_DELAY_MS));
+
+  logMessage("[DRIVER HAND-OFF PASS]: Driver configured in PARALLEL_MODE.");
   return true;
 }
 
 bool readLowLevelScanFrame(float &outGasRes, uint8_t &outStep) {
-  uint16_t temp = bmeTempProf[forcedStepIndex];
-  uint16_t dur = bmeDurProf[forcedStepIndex];
+  if (bme.getOpMode() == BME68X_SLEEP_MODE) {
+    bme.setOpMode(BME68X_PARALLEL_MODE);
+    vTaskDelay(pdMS_TO_TICKS(PARALLEL_MODE_SETTLE_DELAY_MS));
+  }
 
-  // 1. Set heater temperature & duration for current step
-  bme.setHeaterProf(&temp, &dur, 1);
-
-  // 2. Trigger Forced Mode measurement
-  bme.setOpMode(BME68X_FORCED_MODE);
-
-  // 3. Wait exact measurement duration + 10ms margin for hardware completion
-  uint32_t delPeriodUs = bme.getMeasDur(BME68X_FORCED_MODE);
-  //vTaskDelay(pdMS_TO_TICKS((delPeriodUs / 1000) + 10));
   vTaskDelay(pdMS_TO_TICKS(LOW_LEVEL_STEP_DELAY_MS));
 
-  // 4. Fetch data via bme instance
   bme68xData data;
   uint8_t nFields = bme.fetchData();
 
+#if ENABLE_SERIAL_LOGS
+  Serial.printf("[LOW_LEVEL READ]: nFields=%d | checkStatus=%d | OpMode=%d\n", 
+                nFields, bme.checkStatus(), bme.getOpMode());
+#endif
+
   if (nFields > 0) {
     bme.getData(data);
-    // logMessage("   [STEP " + String(forcedStepIndex) + " DETAIL]: Temp=" + String(temp) 
-    //            + "C | GasRes=" + String((long)data.gas_resistance) 
-    //            + " Ohm | Status=0x" + String(data.status, HEX));
-    sensorData.currentTemp = data.temperature;
+
+    sensorData.currentTemp     = data.temperature;
     sensorData.currentHumidity = data.humidity;
 
-    if ((data.status & BME68X_GASM_VALID_MSK) && (data.gas_resistance >= HW_MIN_SENSOR_GAS_RES)) {
-      outGasRes = data.gas_resistance;
-      outStep = forcedStepIndex;
+    bool hasNewData     = (data.status & BME68X_NEW_DATA_MSK) != 0;
+    bool isGasValid     = (data.status & BME68X_GASM_VALID_MSK) != 0;
+    bool isHeaterStable = (data.status & BME68X_HEAT_STAB_MSK) != 0;
+    bool isValidMinRes  = (data.gas_resistance >= HW_MIN_SENSOR_GAS_RES);
+    bool isValidStep    = (data.gas_index < BME68X_MAX_HEATER_STEPS);
 
-      forcedStepIndex = (forcedStepIndex + 1) % 10;
+#if ENABLE_SERIAL_LOGS
+    Serial.printf("   [HW FRAME]: Step=%d | GasRes=%.0f Ohm | Temp=%.1f C | RH=%.1f %% | Status=0x%02X (NewData=%s, GasValid=%s, HeatStab=%s)\n",
+                  data.gas_index, data.gas_resistance, data.temperature, data.humidity,
+                  data.status, hasNewData ? "YES" : "NO", isGasValid ? "YES" : "NO", isHeaterStable ? "YES" : "NO");
+#endif
+
+    if (hasNewData && isGasValid && isValidMinRes && isValidStep) {
+      outGasRes = data.gas_resistance;
+      outStep   = data.gas_index;
+
+#if ENABLE_SERIAL_LOGS
+      Serial.printf("   [FRAME ACCEPTED]: Step=%d | GasRes=%.0f Ohm\n", outStep, outGasRes);
+#endif
       return true;
     }
-  } else {
-    logMessage("   [STEP " + String(forcedStepIndex) + " DETAIL]: No data returned (nFields = 0)");
   }
 
-  forcedStepIndex = (forcedStepIndex + 1) % 10;
   return false;
 }
 
@@ -475,7 +501,7 @@ static void executeBreathWarmup() {
   vTaskDelay(pdMS_TO_TICKS(I2C_BUS_RESET_DELAY_MS));
 
   if (!configureLowLevelParallelScan()) {
-    logMessage("[ERROR]: Failed to configure parallel scan heater matrix!");
+    logMessage("[ERROR]: Failed to configure low-level scan heater matrix!");
     return;
   }
 
@@ -485,10 +511,14 @@ static void executeBreathWarmup() {
   dispatchData("{\"state\":\"" + String(STATE_WARMING_UP) + "\",\"seconds\":" + String(SELECTIVITY_WARMUP_DELAY_MS / 1000) + "}");
 
   uint32_t warmupStart = millis();
-  while (millis() - warmupStart < SELECTIVITY_WARMUP_DELAY_MS) {
+  uint16_t warmupFrames = 0;
+
+  while ((millis() - warmupStart) < SELECTIVITY_WARMUP_DELAY_MS) {
     float gasRes = 0.0f;
     uint8_t step = 0;
+    
     if (readLowLevelScanFrame(gasRes, step)) {
+      warmupFrames++;
       if (gasRes >= HW_MIN_SENSOR_GAS_RES) {
         sensorData.currentGasRes = gasRes;
         sensorData.currentHeaterStep = step;
@@ -498,7 +528,7 @@ static void executeBreathWarmup() {
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
 
-  logMessage("[WARMUP EXECUTE]: Option B Warmup complete.");
+  logMessage("[WARMUP EXECUTE]: Option B Warmup complete across " + String(warmupFrames) + " frames.");
   newGasDataAvailable = false;
 }
 
@@ -507,12 +537,15 @@ uint8_t collectBaselineSamples(float &sumRes, float &sumHumidity, float &sumTemp
   uint8_t validCount = 0;
   uint32_t startMs = millis();
   uint32_t lastDiagLogMs = 0;
+  uint32_t totalAttempts = 0;
+  uint32_t transientRejections = 0;
 
   logMessage("[BASELINE LOOP START]: Target Count = " + String(targetCount) + " | Timeout = " + String(timeoutMs) + " ms");
 
-  while (validCount < targetCount && (millis() - startMs < timeoutMs)) {
+  while (validCount < targetCount && ((millis() - startMs) < timeoutMs)) {
     float rawRes = 0.0f;
     uint8_t step = 0;
+    totalAttempts++;
 
     if (readLowLevelScanFrame(rawRes, step)) {
       bool isBusFaultTransient = (rawRes < HW_MIN_SENSOR_GAS_RES) || (rawRes > HW_MAX_TRANSIENT_GAS_RES);
@@ -528,12 +561,17 @@ uint8_t collectBaselineSamples(float &sumRes, float &sumHumidity, float &sumTemp
         sumCO2 += sensorData.currentCO2;
         validCount++;
         logMessage("[BASELINE SAMPLE ACCEPTED " + String(validCount) + "/" + String(targetCount) + "]: Step " + String(step) + " Gas = " + String((long)rawRes) + " Ohm");
+      } else {
+        transientRejections++;
+        Serial.printf("   [BASELINE TRANSIENT REJECT]: Step=%d | rawRes=%.0f Ohm (Bounds: %.0f - %.0f)\n",
+                      step, rawRes, HW_MIN_SENSOR_GAS_RES, HW_MAX_TRANSIENT_GAS_RES);
       }
     }
 
-    if (millis() - lastDiagLogMs >= DIAG_LOG_INTERVAL_MS) {
+    if ((millis() - lastDiagLogMs) >= DIAG_LOG_INTERVAL_MS) {
       lastDiagLogMs = millis();
-      logMessage("[BASELINE LOOP TICK @ " + String(millis() - startMs) + " ms]: Valid Samples = " + String(validCount) + "/" + String(targetCount));
+      logMessage("[BASELINE LOOP TICK @ " + String(millis() - startMs) + " ms]: Valid=" + String(validCount) + "/" + String(targetCount) +
+                 " | Attempts=" + String(totalAttempts) + " | TransientRejects=" + String(transientRejections));
     }
 
     vTaskDelay(pdMS_TO_TICKS(LOW_LEVEL_STEP_DELAY_MS));
@@ -570,8 +608,6 @@ bool prepareAndCaptureBaseline(float &outBaselineRes, float &outBaseHumidity, fl
 
 bool validateBaselineQuality(float avgRes, float avgCO2) {
   bool isResOutOfBounds = (avgRes < BASELINE_STABLE_MIN_GAS_RES) || (avgRes > BASELINE_STABLE_MAX_GAS_RES);
-  
-  // CO2 is only validated if BSEC is active and producing non-zero ppm readings
   bool isCO2OutOfBounds = (avgCO2 > 0.0f) && ((avgCO2 < BASELINE_MIN_VALID_CO2_PPM) || (avgCO2 > BASELINE_MAX_VALID_CO2_PPM));
   
   bool isBaselineInvalid = isResOutOfBounds || isCO2OutOfBounds;
@@ -610,7 +646,6 @@ void resetToDefaultMode() {
 void runBreathSequence() {
   logMessage("[SEQUENCE START]: Breath test sequence initiated.");
   
-  // 1. Snapshot ambient CO2, Temp, and RH from BSEC BEFORE pausing BSEC
   float ambientCO2 = sensorData.currentCO2;
   float ambientTemp = sensorData.currentTemp;
   float ambientRH = sensorData.currentHumidity;
@@ -663,26 +698,33 @@ static bool evaluateExhalationFrame(float baseGasRes, float baseHumidity, float 
   updateSelectivityRatio(currentGasRes, step);
 
   float deltaHumidity = sensorData.currentHumidity - baseHumidity;
-  float deltaTemp = sensorData.currentTemp - baseTemp;
-  float deltaCO2 = sensorData.currentCO2 - baseCO2;
+  float deltaTemp     = sensorData.currentTemp - baseTemp;
+  float deltaCO2      = sensorData.currentCO2 - baseCO2;
 
-  float gasDropPct = (baseGasRes > 0.0f && currentGasRes > 0.0f) ? ((baseGasRes - currentGasRes) / baseGasRes) * 100.0f : 0.0f;
+  float gasDropPct = (baseGasRes > 0.0f && currentGasRes > 0.0f) 
+                     ? ((baseGasRes - currentGasRes) / baseGasRes) * 100.0f 
+                     : 0.0f;
 
   if (currentGasRes > 0.0f && currentGasRes < outMinRes) {
     outMinRes = currentGasRes;
   }
 
   if (deltaHumidity > outMaxDeltaRH) outMaxDeltaRH = deltaHumidity;
-  if (deltaCO2 > outMaxDeltaCO2) outMaxDeltaCO2 = deltaCO2;
+  if (deltaCO2 > outMaxDeltaCO2)    outMaxDeltaCO2 = deltaCO2;
 
   dispatchData("{\"dH\":" + String(deltaHumidity, 1) + ",\"dT\":" + String(deltaTemp, 1) + ",\"dCO2\":" + String(deltaCO2, 0) + ",\"gDrop\":" + String(gasDropPct, 1) + "}");
 
   bool isMoistSpike = (deltaHumidity >= EXHALATION_MIN_MOISTURE_DELTA_RH_PCT);
   bool isWarming = (deltaTemp >= EXHALATION_MIN_TEMP_DELTA_C);
-  bool isCO2Spike = (deltaCO2 >= EXHALATION_MIN_CO2_DELTA_PPM);
   bool isGasDrop = (gasDropPct >= EXHALATION_MIN_GAS_DROP_PCT && gasDropPct <= EXHALATION_MAX_GAS_DROP_PCT);
+  bool isThermalWarmingWithGasDrop = isWarming && (gasDropPct >= EXHALATION_WARMING_GAS_DROP_GATE_PCT);
 
-  return isMoistSpike && (isWarming || isGasDrop || isCO2Spike);
+  // Bypass mandatory moisture spike logic when room baseline relative humidity is already saturated
+  if (baseHumidity >= 80.0f) {
+    return isGasDrop || isThermalWarmingWithGasDrop;
+  }
+
+  return isMoistSpike && (isGasDrop || isThermalWarmingWithGasDrop);
 }
 
 bool waitForBreathExhalation(float baseGasRes, float baseHumidity, float baseTemp, float baseCO2,
@@ -980,7 +1022,7 @@ void enterLightSleep(uint64_t sleepTimeMs) {
 void performWarmup() {
   setBsecProfile(PROFILE_LP_3S);
   uint32_t warmupStart = millis();
-  while (millis() - warmupStart < WARMUP_SHORT_DELAY_MS) {
+  while ((millis() - warmupStart) < WARMUP_SHORT_DELAY_MS) {
     if (bsecReady && bsec != nullptr) {
       bsec->run();
     }
@@ -1261,7 +1303,7 @@ void loop() {
     static unsigned long lastNotifyTime = 0;
     unsigned long notifyInterval = (currentProfile == PROFILE_LP_3S) ? NOTIFY_LP_INTERVAL_MS : NOTIFY_ULP_INTERVAL_MS;
 
-    if (millis() - lastNotifyTime >= notifyInterval) {
+    if ((millis() - lastNotifyTime) >= notifyInterval) {
       lastNotifyTime = millis();
 
       if (sensorData.currentGasRes > 0.0f) {
@@ -1297,7 +1339,7 @@ void adjustAdvertisingPower(bool newlyDisconnected) {
 #if ENABLE_SERIAL_LOGS
     Serial.println("[BLE]: Entered fast advertising mode (100ms - 200ms).");
 #endif
-  } else if (!deviceConnected && !isInLowPowerAdvertising && (millis() - disconnectTime > FAST_ADV_BURST_WINDOW_MS)) {
+  } else if (!deviceConnected && !isInLowPowerAdvertising && ((millis() - disconnectTime) > FAST_ADV_BURST_WINDOW_MS)) {
     isInLowPowerAdvertising = true;
 
     pAdvertising->stop();
