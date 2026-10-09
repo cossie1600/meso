@@ -20,7 +20,7 @@ const uint8_t bsec_config_iaq[] = {
 };
 
 #define ENABLE_SERIAL_LOGS true
-#define ENABLE_VERBOSE_DEBUG true
+#define ENABLE_VERBOSE_DEBUG false
 
 #define VERBOSE_LOG(x) do { \
   if (ENABLE_VERBOSE_DEBUG) { \
@@ -79,7 +79,7 @@ constexpr float HW_MIN_SENSOR_GAS_RES = 5000.0f;
 constexpr float PARTIAL_EXHALATION_MIN_DELTA_RH_PCT = 0.8f;
 constexpr float PARTIAL_EXHALATION_MIN_DELTA_CO2_PPM = 100.0f;
 constexpr float EXHALATION_MIN_MOISTURE_DELTA_RH_PCT = 20.0f;
-constexpr float EXHALATION_MIN_GAS_DROP_PCT          = 8.0f;
+constexpr float EXHALATION_MIN_GAS_DROP_PCT          = 5.0f;
 
 constexpr const char *STATE_EXHALATION_TOO_WEAK = "EXHALATION_TOO_WEAK";
 constexpr const char *STATE_TRY_AGAIN_LATER = "TRY_AGAIN_LATER";
@@ -177,6 +177,9 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
       case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:
         sensorData.currentHumidity = output.signal;
         break;
+      case BSEC_OUTPUT_RAW_PRESSURE:
+        sensorData.currentPressure = output.signal / 100.0f; // Pa to hPa
+        break;
       case BSEC_OUTPUT_CO2_EQUIVALENT:
         sensorData.currentCO2 = output.signal;
         break;
@@ -184,9 +187,6 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
   }
 }
 
-bool configureLowLevelParallelScan() { 
-  return true; 
-}
 
 bool readLowLevelScanFrame(float &outGasRes, uint8_t &outStep) {
   if (bsecReady && bsec) bsec->run();
@@ -358,6 +358,13 @@ void processBreathTestResults(float baseRes, float minRes, float maxDeltaHumidit
 
 void runBreathSequence() {
   logMessage("[SEQUENCE START]: Breath test sequence initiated (Pure BSEC LP).");
+
+  // Clear stale metrics from previous tests
+  sensorData.deltaDrop = 0.0f;
+  sensorData.recoveryLagSec = 0.0f;
+  sensorData.rBreathMin = 0;
+  sensorData.ptcResult = RESULT_NONE;
+
   float ambientCO2 = sensorData.currentCO2;
   float ambientTemp = sensorData.currentTemp;
   float ambientRH = sensorData.currentHumidity;
@@ -380,7 +387,13 @@ void runBreathSequence() {
     captureRecoveryWindow(minRes, baseRes, recoveryLag);
     processBreathTestResults(baseRes, minRes, maxDeltaRH, maxDeltaCO2, recoveryLag);
   } else {
-    dispatchData("{\"state\":\"" + String(STATE_TIMEOUT) + "\"}");
+    const bool isWeakExhalationDetected = (maxDeltaRH >= PARTIAL_EXHALATION_MIN_DELTA_RH_PCT);
+
+    if (isWeakExhalationDetected) {
+      dispatchData("{\"state\":\"" + String(STATE_EXHALATION_TOO_WEAK) + "\"}");
+    } else {
+      dispatchData("{\"state\":\"" + String(STATE_TIMEOUT) + "\"}");
+    }
   }
   
   updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
