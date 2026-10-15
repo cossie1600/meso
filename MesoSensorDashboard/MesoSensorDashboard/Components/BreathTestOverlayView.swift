@@ -13,7 +13,24 @@ struct BreathTestOverlayView: View {
             switch bleManager.breathTestState {
             case .idle:
                 EmptyView()
-                
+
+            case .coldBootWarmup:
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                        .tint(Color.appPrimaryText)
+                    
+                    Text(bleManager.statusText) // "Sensor Warming Up (4m 12s)..."
+                        .font(.headline)
+                        .foregroundColor(Color.appPrimaryText)
+                    
+                    Text("The sensor is stabilizing...")
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .foregroundColor(Color.appSecondaryText)
+                }
+                .padding(.vertical, 8)
+
             case .warmingUp:
                 VStack(spacing: 12) {
                     ProgressView()

@@ -13,9 +13,18 @@ struct SettingsView: View {
     @AppStorage("MesoNosePairedUUID") private var pairedUUIDString: String = ""
 
     private var settingsStatusText: String {
-        if let connectedNose = bluetoothManager.mesoNosePeripheral, connectedNose.state == .connected {
-            return "Connected"
-        } else if bluetoothManager.isPairingModeActive {
+        if let nose = bluetoothManager.mesoNosePeripheral {
+            switch nose.state {
+            case .connected:
+                return "Connected"
+            case .connecting:
+                return "Connecting..."
+            default:
+                break
+            }
+        }
+
+        if bluetoothManager.isPairingModeActive {
             return "Ready For Pairing"
         } else {
             return "Disconnected"
@@ -24,9 +33,14 @@ struct SettingsView: View {
 
     private var settingsStatusColor: Color {
         switch settingsStatusText {
-        case "Connected": return Color(red: 0.1, green: 0.5, blue: 0.2)
-        case "Ready For Pairing": return .blue
-        default: return .secondary
+        case "Connected":
+            return Color(red: 0.1, green: 0.5, blue: 0.2) // Deep Forest Green
+        case "Connecting...":
+            return .orange // Warm Orange during connection handshake
+        case "Ready For Pairing":
+            return .blue // Blue during RSSI discovery
+        default:
+            return Color.appPrimaryText // Charcoal/Black for Disconnected
         }
     }
 
@@ -131,38 +145,38 @@ struct SettingsView: View {
                                 .cornerRadius(16)
                             }
 
-                            // 2. Sampling Mode Selection Cards
-                            VStack(alignment: .leading, spacing: 14) {
-                                Text("SELECT SAMPLING MODE")
-                                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                                    .foregroundColor(Color.appSecondaryText)
-
-                                VStack(spacing: 10) {
-                                    SamplingModeRow(
-                                        title: "Active Sampling (3s)",
-                                        subtitle: "Continuous live telemetry stream every 3 seconds.",
-                                        isSelected: bluetoothManager.currentSamplingMode == .active3s
-                                    ) {
-                                        bluetoothManager.setSamplingMode(mode: .active3s)
-                                    }
-
-                                    SamplingModeRow(
-                                        title: "Ultra Low Power (5m)",
-                                        subtitle: "Saves battery by taking readings every 5 minutes.",
-                                        isSelected: bluetoothManager.currentSamplingMode == .ulp5m
-                                    ) {
-                                        bluetoothManager.setSamplingMode(mode: .ulp5m)
-                                    }
-
-                                    SamplingModeRow(
-                                        title: "Stopped",
-                                        subtitle: "Pause all background telemetry sampling.",
-                                        isSelected: bluetoothManager.currentSamplingMode == .stopped
-                                    ) {
-                                        bluetoothManager.setSamplingMode(mode: .stopped)
-                                    }
-                                }
-                            }
+//                            // 2. Sampling Mode Selection Cards
+//                            VStack(alignment: .leading, spacing: 14) {
+//                                Text("SELECT SAMPLING MODE")
+//                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+//                                    .foregroundColor(Color.appSecondaryText)
+//
+//                                VStack(spacing: 10) {
+//                                    SamplingModeRow(
+//                                        title: "Active Sampling (3s)",
+//                                        subtitle: "Continuous live telemetry stream every 3 seconds.",
+//                                        isSelected: bluetoothManager.currentSamplingMode == .active3s
+//                                    ) {
+//                                        bluetoothManager.setSamplingMode(mode: .active3s)
+//                                    }
+//
+//                                    SamplingModeRow(
+//                                        title: "Ultra Low Power (5m)",
+//                                        subtitle: "Saves battery by taking readings every 5 minutes.",
+//                                        isSelected: bluetoothManager.currentSamplingMode == .ulp5m
+//                                    ) {
+//                                        bluetoothManager.setSamplingMode(mode: .ulp5m)
+//                                    }
+//
+//                                    SamplingModeRow(
+//                                        title: "Stopped",
+//                                        subtitle: "Pause all background telemetry sampling.",
+//                                        isSelected: bluetoothManager.currentSamplingMode == .stopped
+//                                    ) {
+//                                        bluetoothManager.setSamplingMode(mode: .stopped)
+//                                    }
+//                                }
+//                            }
 
                         case .particulates:
                             VStack(alignment: .leading, spacing: 14) {

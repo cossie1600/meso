@@ -1,0 +1,117 @@
+# Firmware & iOS Development Context: Pure BSEC Kinetics & Strategic Plan
+
+Paste this entire section into any new chat session to instantly preload the complete system architecture, logic specifications, iOS app integration state, and current progress.
+
+---
+
+## 1. Project Overview & System Architecture
+
+We are building professional-grade breath analysis firmware for an ESP32-based device using the **Bosch BME688** gas sensor alongside a companion **iOS Swift App** (`MesoSensorDashboard`). The system classifies oral conditions and volatile organic compounds (VOCs) based on physical sensor kinetics ($\Delta RH$, relative gas resistance drop $gDrop$, and desorption recovery lag $T_{50}$) rather than virtual BSEC indoor air quality outputs.
+
+### Hardware & Software Stack
+
+* **Microcontroller:** ESP32 (SDA: Pin 6, SCL: Pin 7, Baud: 115200, I2C: 100 kHz).
+* **Communication & Storage:** NimBLE BLE service (`4fa215f0-0001-4b0e-b682-1a4c70f3a601`), LittleFS offline data logging (`/offline_data.json`).
+* **Sensor Library:** Bosch BSEC2 (`bsec2.h`) and low-level BME68x driver (`bme68x.h`).
+* **Sensor Profile:** Bosch selectivity model (`bme688_sel_33v_3s_4d` / `bsec_selectivity.txt`).
+* **iOS App Architecture:** SwiftData, CoreBluetooth (`BluetoothManager` / `BluetoothManager+MesoNose.swift`), strict zero-magic-literals architecture.
+
+---
+
+## 2. Shared Physical Sensing Principles & Variables
+
+The system relies strictly on physical gas and humidity dynamics. $eCO_2$ is unsupported by the custom Bosch selectivity profile (returns `0`) and is omitted from classification decisions.
+
+### Shared Constants & Triggers
+
+* **Cold Boot Warm-Up:** Requires a mandatory **5-minute (300s) cold boot stabilization** on power-on. Emits `{"state":"COLD_BOOT_WARMING_UP","remaining_sec":300}` and `{"state":"WARMUP_COMPLETE"}` when ready. Inter-test delay during continuous mode is **0 seconds**.
+* **Baseline Capture:** Captures 3 valid samples ($9\text{ seconds}$ total) from ambient air to calculate $R_{base}$ and $RH_{base}$.
+* **Exhalation Trigger Thresholds:**
+* **Standard Blow:** $\Delta RH \ge 20.0\%$ **AND** $gDrop \ge 5.0\%$.
+* **High Humidity Ambient Override ($RH_{base} \ge 80.0\%$):** $gDrop \ge 5.0\%$.
+
+
+* **Weak Blow Detection:** $0.8\% \le \Delta RH < 20.0\%$ outputs `{"state":"EXHALATION_TOO_WEAK"}`.
+* **No Blow Timeout:** 30 seconds with $\Delta RH < 0.8\%$ outputs `{"state":"TIMEOUT"}`.
+* **Pressure Calibration:** Pressure is read as raw Pascals from `BSEC_OUTPUT_RAW_PRESSURE` and converted to hPa (`signal / 100.0f`).
+
+---
+
+## 3. Pure BSEC Kinetics Architecture & iOS Integration
+
+The **Pure BSEC Kinetics** sketch operates the sensor in continuous Low Power 3-second mode (`BSEC_SAMPLE_RATE_LP`) to keep the micro-heater plate continuously energized at ~300°C.
+
+### Physical Formulas
+
+1. **Gas Resistance Drop Percentage ($gDrop$):**
+
+$$gDrop = \frac{R_{base} - R_{min}}{R_{base}} \times 100\%$$
+
+2. **Moisture Delta ($\Delta RH$):**
+
+$$\Delta RH = RH_{max} - RH_{base}$$
+
+3. **$T_{50}$ Desorption Recovery Lag:** Time in seconds ($\tau_{50}$) for gas resistance to recover 50% from $R_{min}$ back toward $R_{base}$:
+
+$$R_{target50} = R_{min} + 0.5 \times (R_{base} - R_{min})$$
+
+* **Fast Recovery ($\tau_{50} < 3.5\text{s}$):** Non-sulfur organic molecules (beverage/food/alcohol esters) desorb rapidly.
+* **Slow Recovery ($\tau_{50} \ge 3.5\text{s}$):** Volatile Sulfur Compounds ($H_2S$, methyl mercaptan) bind strongly to the plate.
+
+### Refined Decision Matrix & Non-Judgmental App Mapping
+
+| Result Code | $\Delta RH$ | $gDrop$ | $T_{50}$ Lag | iOS App Display Title | Physical Interpretation |
+| --- | --- | --- | --- | --- | --- |
+| `BALANCED_BREATH` | $\ge 2.5\%$ | $< 15\%$ | **$< 3.5\text{s}$** | Fresh & Balanced Breath | Fresh baseline breath clearing rapidly |
+| `SETTLE_BEVERAGE_FOOD_ODOR` | $\ge 2.5\%$ | $< 15\%$ | **$\ge 3.5\text{s}$** | Settling Flavor Notes | Trace organic residue settling post-ingestion |
+| `SOME_BEVERAGE_FOOD_ODOR` | $\ge 2.5\%$ | $\ge 15\%$ | $< 3.5\text{s}$ | Food & Drink Aftertaste | Moderate non-sulfur organic residue |
+| `NOTICEABLE_MALODOR` | $\ge 2.5\%$ | $15\% - 45\%$ | $\ge 3.5\text{s}$ | Freshness Boost Recommended | Moderate volatile sulfur compounds present |
+| `STRONG_MALODOR` | $\ge 2.5\%$ | $\ge 45\%$ | $\ge 3.5\text{s}$ | Oral Hydration & Care Alert | High VSC concentration |
+| `DRY_MOUTH_HYDRATE` | $< 2.5\%$ | $\ge 15\%$ | $< 3.5\text{s}$ | Hydration Boost Needed | Oral dehydration with food residue |
+| `DRY_MOUTH_VSC_BUILDUP` | $< 2.5\%$ | $\ge 15\%$ | $\ge 3.5\text{s}$ | Low Moisture & Natural Shift | Oral dehydration with active VSC accumulation |
+| `NONE` | Any | $< 15\%$ | Any | Neutral Reading | Sub-threshold change or invalid blow |
+
+### iOS App (`MesoSensorDashboard`) Integration Highlights
+
+* **State Machine Integration:** Supports `.coldBootWarmup` state in `BreathTestState`, preventing user triggers until `WARMUP_COMPLETE` is received.
+
+
+* **Payload Parsing:** Handles all firmware status messages (`BREATH_TEST_STARTED`, `BREATH_TEST_COMPLETE`) and hardware states (`COLD_BOOT_WARMING_UP`, `READY_PLEASE_BLOW`, `TESTING_SENSING_BREATH`, `RECOVERING_CALCULATING_T50`, `EXHALATION_TOO_WEAK`, `TRY_AGAIN_LATER`, `TIMEOUT`).
+
+
+* **Zero-Magic-Literals Cleanliness:** All keys (`MesoNosePayloadKeys`), log messages (`BMLogMessages`, `MesoNoseLogMessages`), UI text (`MesoNoseUIStrings`), and numeric constants (`BMConstants`, `MesoNoseConstants`) are fully centralized into structs and enums.
+
+
+
+---
+
+## 4. Forced Step Ratio Architecture (Next Implementation Phase)
+
+The **Forced Step Ratio** sketch replaces continuous single-temperature LP heating with low-level heater matrix profile stepping using the raw `bme68x` driver API.
+
+### Core Architectural Differences
+
+| Feature / Metric | Pure BSEC Kinetics Architecture | Forced Step Ratio Architecture |
+| --- | --- | --- |
+| **Engine / Driver** | BSEC2 C++ Library (`bsec2.h`) | Low-level BME68x Driver (`bme68x.h`) |
+| **Heater Operation** | Continuous 3s LP single temperature (~300°C) | Multi-step heater profile array (10 steps from 200°C to 400°C) |
+| **Data Output per Frame** | Single raw gas resistance value per 3s frame | Multi-point resistance array ($R_{step1}, R_{step2}, \dots, R_{step10}$) per scan loop |
+| **Selectivity Metric** | Desorption recovery lag time ($T_{50}$) over 15s window | Differential gas resistance ratios across steps ($R_{step\_i} / R_{step\_j}$) |
+| **Exhalation Trigger** | Physical $\Delta RH \ge 20\%$ AND $gDrop \ge 5\%$ | Physical $\Delta RH \ge 20\%$ AND $gDrop \ge 5\%$ (identical trigger) |
+
+---
+
+## 5. Strategic Execution Roadmap
+
+1. **Phase 1 (Current Focus): Pure Kinetics End-to-End Validation**
+* Perform full hardware testing between ESP32 (running Pure BSEC firmware) and iOS app.
+* Verify BLE handshake, 5-minute cold boot warm-up timer countdown, exhalation detection, weak blow alerts, timeout recoveries, and result rendering.
+
+
+2. **Phase 2: Forced Step Ratio Firmware Deployment**
+* Transition ESP32 to low-level raw `bme68x` C driver multi-step parallel scan mode.
+* Fine-tune step ratio differential logic ($R_{400^\circ\text{C}} / R_{200^\circ\text{C}}$) against real breath samples.
+
+
+3. **Phase 3: Rebrand Sweep (Frozen Identifiers)**
+* Once end-to-end functionality is 100% locked, execute a single-commit find-and-replace sweep across firmware (`DEVICE_BASE_NAME`) and iOS app (`AppConfig`, asset catalogs, BLE search strings).

@@ -12,6 +12,8 @@ struct BreathTestSheetView: View {
 
     private var breathStatusText: String {
         switch bleManager.breathTestState {
+        case .coldBootWarmup:
+            return bleManager.statusText.lowercased()
         case .warmingUp:
             return "warming up..."
         case .blowNow:
@@ -32,14 +34,14 @@ struct BreathTestSheetView: View {
 
     private var statusBadgeColor: Color {
         switch bleManager.breathTestState {
+        case .coldBootWarmup, .warmingUp:
+            return .orange
         case .blowNow:
             return .green
         case .processing:
             return .blue
         case .timeout:
             return .red
-        case .warmingUp:
-            return .orange
         case .completed, .idle:
             return bleManager.isPurgingMoisture ? .orange : .green
         }
@@ -70,7 +72,7 @@ struct BreathTestSheetView: View {
                         Button(action: {
                             bleManager.triggerBreathTest()
                         }) {
-                            Text("Start")
+                            Text(bleManager.breathTestState == .coldBootWarmup ? "Warming Up..." : "Start")
                                 .font(.system(size: 20, weight: .bold, design: .rounded))
                                 .foregroundColor(.white)
                                 .frame(maxWidth: .infinity)
@@ -145,6 +147,14 @@ struct BreathTestSheetView: View {
                 }
 
                 Spacer()
+            }
+
+            // Readiness Overlay Layer (Renders when disconnected or stabilizing)
+            if !bleManager.isSensorReadyForTest {
+                Color.appBackground.opacity(0.85)
+                    .ignoresSafeArea()
+
+                BreathTestReadinessOverlayView(bleManager: bleManager)
             }
         }
     }

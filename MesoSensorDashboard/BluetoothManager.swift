@@ -8,8 +8,187 @@ import CoreBluetooth
 import Foundation
 import SwiftData
 
+// MARK: - Constants & Log Messages (Zero Magic Values)
+
+private struct BMConstants {
+    static let savedMesoNoseUUIDKey = "SavedMesoNosePeripheralUUID"
+    static let savedMesoPinUUIDKey = "SavedMesoPinPeripheralUUID"
+    static let restoreIdentifier = "MesoSensorDashboardCentralRestoreID"
+
+    static let defaultStatusInitializing = "Initializing..."
+    static let placeholderValue = "--"
+    static let emptyString = ""
+    static let newlineString = "\n"
+    static let syncCompleteToken = "SYNC_COMPLETE"
+    static let jsonObjectStart = "{"
+    static let jsonObjectEnd = "}"
+
+    static let purgeWindowSeconds: TimeInterval = 180.0
+    static let notificationStateDelaySeconds: Double = 0.3
+    static let initialBurstDurationSeconds: Double = 15.0
+    static let proximityRSSIThreshold: Int = -65
+    static let invalidRSSI: Int = 127
+
+    static let zeroInt: Int = 0
+    static let zeroValue: Double = 0.0
+    static let zeroVOC: Int = 0
+    static let singleCount: Int = 1
+    static let minUnsaturatedVOC: Int = 5000
+    static let maxUnsaturatedVOC: Int = 2_000_000
+    static let maxAmbientSampleAgeSeconds: TimeInterval = 300.0 // 5 minutes freshness window
+    
+
+    static let statusScanning = "Scanning for Meso Sensors..."
+    static let statusPowerOff = "Bluetooth is turned off"
+    static let statusPermissionsDenied = "Permissions denied"
+    static let statusDisconnectedScanning = "Disconnected. Scanning..."
+    static let statusConnectedMock = "Connected (Mock Simulator)"
+    static let statusConnectedLive = "Connected (Live)"
+    static let statusSimulatorError = "Error: Use Simulator Bridge on Mac."
+    static let defaultDeviceName = "Device"
+    static let defaultUnknownDevice = "Unknown Device"
+    static let defaultUnnamedLocalDevice = "Unnamed Local Device"
+    static let debugEmergencyActive = "DEBUG: Forced Emergency Active"
+
+    static func statusConnectingTo(_ deviceName: String) -> String {
+        "Connecting to \(deviceName)..."
+    }
+
+    static func statusConnectedDevicesCount(_ count: Int) -> String {
+        "Connected (\(count) Device\(count > singleCount ? "s" : ""))"
+    }
+
+    static func statusConnectedActiveCount(_ count: Int) -> String {
+        "Connected (\(count) Active)"
+    }
+}
+
+private struct BMLogMessages {
+    static let inMemoryDbInitialized = "In-Memory Test Database Container Initialized."
+    static let mockBridgeActive = "Mock Simulator Bridge Active. Bypassing BLE Hardware."
+    static let realHardwareActive = "Real BLE Hardware Mode Active. Instantiating Central Manager."
+    static let simulatorExecutionStopped = "Execution stopped: Cannot run BLE hardware on an iOS Simulator window."
+    static let bluetoothPoweredOn = "Bluetooth hardware status: Powered On. Beginning dual-device scan..."
+    static let bluetoothPoweredOff = "Bluetooth hardware status: Powered Off."
+    static let bluetoothUnauthorized = "Bluetooth hardware status: Unauthorized. Check Info.plist keys."
+    static let startingScan = "Starting BLE peripheral scan for Meso Pin & Meso Nose..."
+    static let syncCompleteReceived = "Ingestion: Sync complete token received."
+    static let purgeCancelled = "Moisture purge timer cancelled and state cleared."
+
+    static func inMemoryDbFailed(_ error: String) -> String {
+        "Failed to create temporary database container: \(error)"
+    }
+
+    static func blockedUlpTransition(_ state: BreathTestState) -> String {
+        "Blocked transition to ULP mode because breath test is active (\(state))."
+    }
+
+    static func mockSettingSamplingMode(_ mode: String) -> String {
+        "Mock Simulator bridge setting sampling mode to: \(mode)"
+    }
+
+    static func bluetoothTransitioningState(_ stateRaw: Int) -> String {
+        "Bluetooth hardware status: Transitioning state \(stateRaw)"
+    }
+
+    static func updatedSavedMesoNoseUUID(_ deviceID: UUID) -> String {
+        "Updated saved Meso Nose UUID to: \(deviceID)"
+    }
+
+    static func targetMatchFound(_ deviceName: String, _ deviceID: UUID) -> String {
+        "Target Match Found via Name: \(deviceName) [\(deviceID)]"
+    }
+
+    static func pairingMatchFound(_ deviceName: String, _ deviceID: UUID, _ rssi: NSNumber) -> String {
+        "Pairing mode match found: \(deviceName) [ID: \(deviceID)] RSSI: \(rssi)"
+    }
+
+    static func connectedTo(_ deviceName: String) -> String {
+        "Swift BLE: Successfully connected to: \(deviceName)"
+    }
+
+    static func failedToConnect(_ deviceName: String, _ errorDesc: String) -> String {
+        "Swift BLE ERROR: Failed to establish link to \(deviceName): \(errorDesc)"
+    }
+
+    static func connectionDropped(_ deviceName: String) -> String {
+        "Swift BLE: Connection dropped for \(deviceName). Re-entering scan."
+    }
+
+    static func restoringSession(_ deviceName: String) -> String {
+        "Swift BLE: Restoring peripheral session: \(deviceName)"
+    }
+
+    static func gattServiceDiscoveryError(_ errorDesc: String) -> String {
+        "GATT Service Discovery Error: \(errorDesc)"
+    }
+
+    static func gattHandshakeStalled(_ deviceName: String) -> String {
+        "GATT Handshake Stalled: Zero services discovered for \(deviceName)."
+    }
+
+    static func discoveredServices(_ count: Int, _ deviceName: String) -> String {
+        "Discovered \(count) services for \(deviceName). Discovering characteristics..."
+    }
+
+    static func gattCharDiscoveryError(_ errorDesc: String) -> String {
+        "GATT Characteristic Discovery Error: \(errorDesc)"
+    }
+
+    static func cachedWriteChar(_ deviceName: String, _ uuidStr: String) -> String {
+        "  -> Cached Write Characteristic [\(deviceName)]: \(uuidStr)"
+    }
+
+    static func executingQueuedCommand(_ rawValue: String) -> String {
+        "Executing queued command [\(rawValue)] after characteristic discovery."
+    }
+
+    static func subscribingNotification(_ deviceName: String, _ uuidStr: String) -> String {
+        "  -> Subscribing to Notification Stream [\(deviceName)]: \(uuidStr)"
+    }
+
+    static func notificationStateError(_ deviceName: String, _ errorDesc: String) -> String {
+        "Notification State Error [\(deviceName)]: \(errorDesc)"
+    }
+
+    static func notificationStateUpdated(_ isNotifying: Bool, _ deviceName: String) -> String {
+        "Notification state updated to \(isNotifying) for \(deviceName)"
+    }
+
+    static func handshakeTestActive(_ state: BreathTestState) -> String {
+        "Handshake established while test active (\(state)). Skipping initial burst timer override."
+    }
+
+    static let handshakeTriggeringBurst = "Handshake Established: Triggering 15s initial sampling burst for valid baseline..."
+
+    static let initialBurstTestActive = "Initial burst complete, but breath test is active. Skipping background mode override."
+
+    static func initialBurstCompleteTransitioning(_ mode: String) -> String {
+        "Initial burst capture complete. Transitioning to configured mode: \(mode)"
+    }
+
+    static func bluetoothNotificationError(_ errorDesc: String) -> String {
+        "Bluetooth notification error: \(errorDesc)"
+    }
+
+    static func mesoNosePayloadIngestion(_ line: String) -> String {
+        "Ingestion: Meso Nose payload -> \(line)"
+    }
+
+    static func unrecognizedPayloadSkipped(_ line: String) -> String {
+        "Unrecognized JSON payload skipped: \(line)"
+    }
+
+    static func extractedMesoNosePayload(_ candidate: String) -> String {
+        "Ingestion (Extracted JSON): Meso Nose -> \(candidate)"
+    }
+}
+
+// MARK: - Enums
+
 enum BreathTestState: Equatable, Sendable {
     case idle
+    case coldBootWarmup
     case warmingUp
     case blowNow
     case processing
@@ -19,6 +198,7 @@ enum BreathTestState: Equatable, Sendable {
     nonisolated static func == (lhs: BreathTestState, rhs: BreathTestState) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle),
+             (.coldBootWarmup, .coldBootWarmup),
              (.warmingUp, .warmingUp),
              (.blowNow, .blowNow),
              (.processing, .processing),
@@ -43,10 +223,12 @@ enum AlertVisualTheme: Sendable {
     case generalCoarse
 }
 
+// MARK: - BluetoothManager Implementation
+
 class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     @Published var breathTestState: BreathTestState = .idle
-    @Published var countdownSeconds: Int = 0
+    @Published var countdownSeconds: Int = BMConstants.zeroInt
     @Published var lastSentCommand: AppConfig.MesoNoseCommand?
     @Published var currentStrategy: ConnectionStrategy
     @Published var currentSamplingMode: SamplingMode = AppConfig.samplingMode
@@ -57,8 +239,8 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     @Published var connectedPeripherals: [UUID: CBPeripheral] = [:]
     @Published var writeCharacteristics: [UUID: CBCharacteristic] = [:]
 
-    private let savedMesoNoseUUIDKey = "SavedMesoNosePeripheralUUID"
-    private let savedMesoPinUUIDKey = "SavedMesoPinPeripheralUUID"
+    private let savedMesoNoseUUIDKey = BMConstants.savedMesoNoseUUIDKey
+    private let savedMesoPinUUIDKey = BMConstants.savedMesoPinUUIDKey
     
     @Published var mesoNoseBattery: Int? = nil
     @Published var ignoredMesoNoseUUID: UUID? = nil
@@ -126,40 +308,60 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
 
     @Published var mesoNoseSamples: [MesoNoseSample] = []
 
-    @Published var statusText: String = "Initializing..."
-    @Published var pm1Value: String = "--"
-    @Published var pm25Value: String = "--"
-    @Published var pm10Value: String = "--"
+    @Published var statusText: String = BMConstants.defaultStatusInitializing
+    @Published var pm1Value: String = BMConstants.placeholderValue
+    @Published var pm25Value: String = BMConstants.placeholderValue
+    @Published var pm10Value: String = BMConstants.placeholderValue
 
     private var incomingBuffers: [UUID: String] = [:]
 
     var purgeRemainingSeconds: TimeInterval {
-        guard let lastDate = lastTestCompletedDate else { return 0 }
+        guard let lastDate = lastTestCompletedDate else { return BMConstants.zeroValue }
         let elapsed = Date().timeIntervalSince(lastDate)
-        return max(0, 180.0 - elapsed)
+        return max(BMConstants.zeroValue, BMConstants.purgeWindowSeconds - elapsed)
     }
 
     var isPurgingMoisture: Bool {
         guard currentSamplingMode != .ulp5m else { return false }
-        return purgeRemainingSeconds > 0
+        return purgeRemainingSeconds > BMConstants.zeroValue
+    }
+
+    /// Evaluates whether a valid ambient baseline sample has been received within the last 5 minutes (300 seconds).
+    var isAmbientSampleFresh: Bool {
+        guard let latestAmbient = mesoNoseSamples.first(where: { $0.breathDropDelta == BMConstants.zeroValue }) else {
+            return false
+        }
+        let elapsed = Date().timeIntervalSince(latestAmbient.timestamp)
+        return elapsed <= BMConstants.maxAmbientSampleAgeSeconds
+    }
+
+    /// Helper property for overall breath test readiness overlay
+    var isSensorReadyForTest: Bool {
+        return mesoNosePeripheral?.state == .connected
+            && breathTestState == .idle
+            && isRoomBaselineReady
     }
 
     var isRoomBaselineReady: Bool {
         guard mesoNosePeripheral?.state == .connected else { return false }
-        guard breathTestState == .idle else { return false }
         if isPurgingMoisture { return false }
 
-        if let latestAmbient = mesoNoseSamples.first(where: { $0.breathDropDelta == 0.0 }) {
-            let validSensors = latestAmbient.temp > 0 && latestAmbient.humidity > 0 && latestAmbient.voc > 0
-            let isUnsaturated = latestAmbient.voc > 5000 && latestAmbient.voc < 2_000_000
-            return validSensors && isUnsaturated
+        // Must have at least one clean ambient reading in memory
+        guard let latestAmbient = mesoNoseSamples.first(where: { $0.breathDropDelta == BMConstants.zeroValue }) else {
+            return false // Block Start until the first baseline sample actually arrives
         }
 
-        return true
-    }
+        let validSensors = latestAmbient.temp > BMConstants.zeroValue
+                        && latestAmbient.humidity > BMConstants.zeroValue
+                        && latestAmbient.voc > BMConstants.zeroVOC
+        let isUnsaturated = latestAmbient.voc > BMConstants.minUnsaturatedVOC
+                         && latestAmbient.voc < BMConstants.maxUnsaturatedVOC
 
+        return validSensors && isUnsaturated && isAmbientSampleFresh
+    }
+    
     init(modelContainer: ModelContainer? = nil) {
-        if let uuidString = UserDefaults.standard.string(forKey: savedMesoNoseUUIDKey),
+        if let uuidString = UserDefaults.standard.string(forKey: BMConstants.savedMesoNoseUUIDKey),
            let uuid = UUID(uuidString: uuidString) {
             self.savedMesoNoseUUID = uuid
         }
@@ -174,16 +376,16 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
                     DB_MesoNoseSample.self,
                     configurations: config
                 )
-                AppLogger.writeLog("In-Memory Test Database Container Initialized.")
+                AppLogger.writeLog(BMLogMessages.inMemoryDbInitialized)
             } catch {
                 self.modelContainer = nil
-                AppLogger.writeLog("Failed to create temporary database container: \(error)")
+                AppLogger.writeLog(BMLogMessages.inMemoryDbFailed(error.localizedDescription))
             }
         }
 
         if AppConfig.forceInitialEmergencyState {
             self.currentStrategy = .emergency
-            self.alertMessage = "DEBUG: Forced Emergency Active"
+            self.alertMessage = BMConstants.debugEmergencyActive
         } else {
             self.currentStrategy = .batterySaver
         }
@@ -191,21 +393,21 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         super.init()
 
         if AppConfig.useMockSimulatorBridge {
-            AppLogger.writeLog("Mock Simulator Bridge Active. Bypassing BLE Hardware.")
-            self.statusText = "Connected (Mock Simulator)"
+            AppLogger.writeLog(BMLogMessages.mockBridgeActive)
+            self.statusText = BMConstants.statusConnectedMock
             startMockDataStream()
         } else {
-            AppLogger.writeLog("Real BLE Hardware Mode Active. Instantiating Central Manager.")
+            AppLogger.writeLog(BMLogMessages.realHardwareActive)
 
             #if !targetEnvironment(simulator)
                 let options: [String: Any] = [
-                    CBCentralManagerOptionRestoreIdentifierKey: "MesoSensorDashboardCentralRestoreID",
+                    CBCentralManagerOptionRestoreIdentifierKey: BMConstants.restoreIdentifier,
                     CBCentralManagerOptionShowPowerAlertKey: true
                 ]
                 centralManager = CBCentralManager(delegate: self, queue: nil, options: options)
             #else
-                AppLogger.writeLog("Execution stopped: Cannot run BLE hardware on an iOS Simulator window.")
-                self.statusText = "Error: Use Simulator Bridge on Mac."
+                AppLogger.writeLog(BMLogMessages.simulatorExecutionStopped)
+                self.statusText = BMConstants.statusSimulatorError
             #endif
         }
 
@@ -221,7 +423,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
 
     func setSamplingMode(mode: SamplingMode = AppConfig.samplingMode) {
         if mode == .ulp5m && breathTestState != .idle {
-            AppLogger.writeLog("Blocked transition to ULP mode because breath test is active (\(breathTestState)).")
+            AppLogger.writeLog(BMLogMessages.blockedUlpTransition(breathTestState))
             return
         }
 
@@ -232,7 +434,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         }
 
         if AppConfig.useMockSimulatorBridge {
-            AppLogger.writeLog("Mock Simulator bridge setting sampling mode to: \(mode.rawValue)")
+            AppLogger.writeLog(BMLogMessages.mockSettingSamplingMode(mode.rawValue))
             startMockDataStream()
         } else {
             switch mode {
@@ -249,27 +451,27 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
-            AppLogger.writeLog("Bluetooth hardware status: Powered On. Beginning dual-device scan...")
-            self.statusText = "Scanning for Meso Sensors..."
+            AppLogger.writeLog(BMLogMessages.bluetoothPoweredOn)
+            self.statusText = BMConstants.statusScanning
             startScanning()
 
         case .poweredOff:
-            AppLogger.writeLog("Bluetooth hardware status: Powered Off.")
-            self.statusText = "Bluetooth is turned off"
+            AppLogger.writeLog(BMLogMessages.bluetoothPoweredOff)
+            self.statusText = BMConstants.statusPowerOff
 
         case .unauthorized:
-            AppLogger.writeLog("Bluetooth hardware status: Unauthorized. Check Info.plist keys.")
-            self.statusText = "Permissions denied"
+            AppLogger.writeLog(BMLogMessages.bluetoothUnauthorized)
+            self.statusText = BMConstants.statusPermissionsDenied
 
         default:
-            AppLogger.writeLog("Bluetooth hardware status: Transitioning state \(central.state.rawValue)")
+            AppLogger.writeLog(BMLogMessages.bluetoothTransitioningState(central.state.rawValue))
         }
     }
 
     func startScanning() {
         guard centralManager?.state == .poweredOn else { return }
 
-        AppLogger.writeLog("Starting BLE peripheral scan for Meso Pin & Meso Nose...")
+        AppLogger.writeLog(BMLogMessages.startingScan)
         centralManager?.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
@@ -284,7 +486,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     ) {
         let deviceName = peripheral.name
             ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
-            ?? "Unnamed Local Device"
+            ?? BMConstants.defaultUnnamedLocalDevice
         let isMesoPin = deviceName.hasPrefix(AppConfig.bluetoothDeviceName)
         let isMesoNose = deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName)
 
@@ -293,38 +495,36 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
 
         guard connectedPeripherals[deviceID] == nil else { return }
 
-        // FIX: If device name matches "Meso Nose", update saved UUID and connect immediately
         if isMesoNose {
             if savedMesoNoseUUID != deviceID {
-                AppLogger.writeLog("Updated saved Meso Nose UUID to: \(deviceID)")
+                AppLogger.writeLog(BMLogMessages.updatedSavedMesoNoseUUID(deviceID))
                 self.savedMesoNoseUUID = deviceID
             }
-            AppLogger.writeLog("Target Match Found via Name: \(deviceName) [\(deviceID)]")
+            AppLogger.writeLog(BMLogMessages.targetMatchFound(deviceName, deviceID))
             connectToPeripheral(peripheral, deviceName: deviceName)
             return
         }
 
         guard savedMesoNoseUUID == nil && isPairingModeActive else { return }
 
-        let proximityRSSIThreshold = -65
-        guard RSSI.intValue != 127 && RSSI.intValue >= proximityRSSIThreshold else { return }
+        guard RSSI.intValue != BMConstants.invalidRSSI && RSSI.intValue >= BMConstants.proximityRSSIThreshold else { return }
 
-        AppLogger.writeLog("Pairing mode match found: \(deviceName) [ID: \(deviceID)] RSSI: \(RSSI)")
+        AppLogger.writeLog(BMLogMessages.pairingMatchFound(deviceName, deviceID, RSSI))
 
         connectToPeripheral(peripheral, deviceName: deviceName)
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        let deviceName = peripheral.name ?? "Unknown Device"
-        AppLogger.writeLog("Swift BLE: Successfully connected to: \(deviceName)")
+        let deviceName = peripheral.name ?? BMConstants.defaultUnknownDevice
+        AppLogger.writeLog(BMLogMessages.connectedTo(deviceName))
 
         peripheral.delegate = self
-        incomingBuffers[peripheral.identifier] = ""
+        incomingBuffers[peripheral.identifier] = BMConstants.emptyString
         peripheral.discoverServices(nil)
 
         DispatchQueue.main.async {
             let count = self.connectedPeripherals.count
-            self.statusText = "Connected (\(count) Device\(count > 1 ? "s" : ""))"
+            self.statusText = BMConstants.statusConnectedDevicesCount(count)
         }
 
         startScanning()
@@ -335,9 +535,9 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         didFailToConnect peripheral: CBPeripheral,
         error: Error?
     ) {
-        let errorDescription = error?.localizedDescription ?? "Unknown error"
-        let deviceName = peripheral.name ?? "Device"
-        AppLogger.writeLog("Swift BLE ERROR: Failed to establish link to \(deviceName): \(errorDescription)")
+        let errorDescription = error?.localizedDescription ?? BMConstants.defaultUnknownDevice
+        let deviceName = peripheral.name ?? BMConstants.defaultDeviceName
+        AppLogger.writeLog(BMLogMessages.failedToConnect(deviceName, errorDescription))
 
         connectedPeripherals.removeValue(forKey: peripheral.identifier)
         writeCharacteristics.removeValue(forKey: peripheral.identifier)
@@ -351,14 +551,14 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         didDisconnectPeripheral peripheral: CBPeripheral,
         error: Error?
     ) {
-        let deviceName = peripheral.name ?? "Device"
-        AppLogger.writeLog("Swift BLE: Connection dropped for \(deviceName). Re-entering scan.")
+        let deviceName = peripheral.name ?? BMConstants.defaultDeviceName
+        AppLogger.writeLog(BMLogMessages.connectionDropped(deviceName))
 
         if peripheral.identifier == self.mesoPinPeripheral?.identifier {
             DispatchQueue.main.async {
-                self.pm1Value = ""
-                self.pm25Value = ""
-                self.pm10Value = ""
+                self.pm1Value = BMConstants.emptyString
+                self.pm25Value = BMConstants.emptyString
+                self.pm10Value = BMConstants.emptyString
             }
         }
 
@@ -368,20 +568,20 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
 
         DispatchQueue.main.async {
             if self.connectedPeripherals.isEmpty {
-                self.statusText = "Disconnected. Scanning..."
+                self.statusText = BMConstants.statusDisconnectedScanning
             } else {
-                self.statusText = "Connected (\(self.connectedPeripherals.count) Active)"
+                self.statusText = BMConstants.statusConnectedActiveCount(self.connectedPeripherals.count)
             }
         }
 
         startScanning()
     }
 
-    // Single Consolidated Restoration Handler
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
             for restoredPeripheral in peripherals {
-                AppLogger.writeLog("Swift BLE: Restoring peripheral session: \(restoredPeripheral.name ?? "Device")")
+                let name = restoredPeripheral.name ?? BMConstants.defaultDeviceName
+                AppLogger.writeLog(BMLogMessages.restoringSession(name))
                 connectedPeripherals[restoredPeripheral.identifier] = restoredPeripheral
                 restoredPeripheral.delegate = self
 
@@ -393,17 +593,18 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        let deviceName = peripheral.name ?? BMConstants.defaultDeviceName
         if let error = error {
-            AppLogger.writeLog("GATT Service Discovery Error: \(error.localizedDescription)")
+            AppLogger.writeLog(BMLogMessages.gattServiceDiscoveryError(error.localizedDescription))
             return
         }
 
         guard let services = peripheral.services, !services.isEmpty else {
-            AppLogger.writeLog("GATT Handshake Stalled: Zero services discovered for \(peripheral.name ?? "Device").")
+            AppLogger.writeLog(BMLogMessages.gattHandshakeStalled(deviceName))
             return
         }
 
-        AppLogger.writeLog("Discovered \(services.count) services for \(peripheral.name ?? "Device"). Discovering characteristics...")
+        AppLogger.writeLog(BMLogMessages.discoveredServices(services.count, deviceName))
         for service in services {
             peripheral.discoverCharacteristics(nil, for: service)
         }
@@ -415,13 +616,14 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         error: Error?
     ) {
         if let error = error {
-            AppLogger.writeLog("GATT Characteristic Discovery Error: \(error.localizedDescription)")
+            AppLogger.writeLog(BMLogMessages.gattCharDiscoveryError(error.localizedDescription))
             return
         }
 
         guard let characteristics = service.characteristics else { return }
 
         let targetNoseCharUUID = AppConfig.mesoNoseCharacteristicUUIDString.lowercased()
+        let deviceName = peripheral.name ?? BMConstants.defaultDeviceName
 
         for characteristic in characteristics {
             let uuidStr = characteristic.uuid.uuidString.lowercased()
@@ -431,10 +633,10 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             if canWrite {
                 if uuidStr == targetNoseCharUUID || writeCharacteristics[peripheral.identifier] == nil {
                     self.writeCharacteristics[peripheral.identifier] = characteristic
-                    AppLogger.writeLog("  -> Cached Write Characteristic [\(peripheral.name ?? "Device")]: \(characteristic.uuid.uuidString)")
+                    AppLogger.writeLog(BMLogMessages.cachedWriteChar(deviceName, characteristic.uuid.uuidString))
 
                     if let pendingCmd = self.pendingMesoNoseCommand {
-                        AppLogger.writeLog("Executing queued command [\(pendingCmd.rawValue)] after characteristic discovery.")
+                        AppLogger.writeLog(BMLogMessages.executingQueuedCommand(pendingCmd.rawValue))
                         self.sendMesoNoseCommand(pendingCmd)
                         self.pendingMesoNoseCommand = nil
                     }
@@ -442,7 +644,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
             }
 
             if canNotify {
-                AppLogger.writeLog("  -> Subscribing to Notification Stream [\(peripheral.name ?? "Device")]: \(characteristic.uuid.uuidString)")
+                AppLogger.writeLog(BMLogMessages.subscribingNotification(deviceName, characteristic.uuid.uuidString))
                 peripheral.setNotifyValue(true, for: characteristic)
             }
         }
@@ -453,47 +655,48 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
         didUpdateNotificationStateFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        let deviceName = peripheral.name ?? BMConstants.defaultDeviceName
         if let error = error {
-            AppLogger.writeLog("Notification State Error [\(peripheral.name ?? "Device")]: \(error.localizedDescription)")
+            AppLogger.writeLog(BMLogMessages.notificationStateError(deviceName, error.localizedDescription))
             return
         }
 
-        AppLogger.writeLog("Notification state updated to \(characteristic.isNotifying) for \(peripheral.name ?? "Device")")
+        AppLogger.writeLog(BMLogMessages.notificationStateUpdated(characteristic.isNotifying, deviceName))
 
         if characteristic.isNotifying && peripheral.name?.hasPrefix(AppConfig.mesoNoseBluetoothName) == true {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + BMConstants.notificationStateDelaySeconds) { [weak self] in
                 guard let self = self else { return }
 
                 guard self.breathTestState == .idle else {
-                    AppLogger.writeLog("Handshake established while test active (\(self.breathTestState)). Skipping initial burst timer override.")
+                    AppLogger.writeLog(BMLogMessages.handshakeTestActive(self.breathTestState))
                     return
                 }
 
-                AppLogger.writeLog("Handshake Established: Triggering 15s initial sampling burst for valid baseline...")
+                AppLogger.writeLog(BMLogMessages.handshakeTriggeringBurst)
                 self.sendMesoNoseCommand(.setActiveSamplingMode)
                 self.cancelInitialBurstTimer()
 
                 let workItem = DispatchWorkItem { [weak self] in
                     guard let self = self, self.mesoNosePeripheral?.state == .connected else { return }
                     guard self.breathTestState == .idle else {
-                        AppLogger.writeLog("Initial burst complete, but breath test is active. Skipping background mode override.")
+                        AppLogger.writeLog(BMLogMessages.initialBurstTestActive)
                         return
                     }
 
                     let targetMode = AppConfig.samplingMode
-                    AppLogger.writeLog("Initial burst capture complete. Transitioning to configured mode: \(targetMode.rawValue)")
+                    AppLogger.writeLog(BMLogMessages.initialBurstCompleteTransitioning(targetMode.rawValue))
                     self.setSamplingMode(mode: targetMode)
                 }
 
                 self.initialBurstWorkItem = workItem
-                DispatchQueue.main.asyncAfter(deadline: .now() + 15.0, execute: workItem)
+                DispatchQueue.main.asyncAfter(deadline: .now() + BMConstants.initialBurstDurationSeconds, execute: workItem)
             }
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         if let error = error {
-            AppLogger.writeLog("Bluetooth notification error: \(error.localizedDescription)")
+            AppLogger.writeLog(BMLogMessages.bluetoothNotificationError(error.localizedDescription))
             return
         }
 
@@ -501,7 +704,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
               let chunk = String(data: data, encoding: .utf8) else { return }
 
         let deviceID = peripheral.identifier
-        incomingBuffers[deviceID, default: ""].append(chunk)
+        incomingBuffers[deviceID, default: BMConstants.emptyString].append(chunk)
 
         guard var currentBuffer = incomingBuffers[deviceID], !currentBuffer.isEmpty else { return }
 
@@ -512,20 +715,20 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
 
             if line.isEmpty { continue }
 
-            if line.contains("SYNC_COMPLETE") {
-                AppLogger.writeLog("Ingestion: Sync complete token received.")
+            if line.contains(BMConstants.syncCompleteToken) {
+                AppLogger.writeLog(BMLogMessages.syncCompleteReceived)
                 DispatchQueue.main.async {
-                    self.updateStatusOnMainThread(to: "Connected (Live)")
+                    self.updateStatusOnMainThread(to: BMConstants.statusConnectedLive)
                 }
                 continue
             }
 
-            if line.hasPrefix("{") {
+            if line.hasPrefix(BMConstants.jsonObjectStart) {
                 if line.isMesoNosePayload {
-                    AppLogger.writeLog("Ingestion: Meso Nose payload -> \(line)")
+                    AppLogger.writeLog(BMLogMessages.mesoNosePayloadIngestion(line))
                     handleMesoNosePacket(line)
                 } else {
-                    AppLogger.writeLog("Unrecognized JSON payload skipped: \(line)")
+                    AppLogger.writeLog(BMLogMessages.unrecognizedPayloadSkipped(line))
                 }
                 continue
             }
@@ -538,30 +741,29 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
 
         for jsonCandidate in jsonObjects {
             if jsonCandidate.isMesoNosePayload {
-                AppLogger.writeLog("Ingestion (Extracted JSON): Meso Nose -> \(jsonCandidate)")
+                AppLogger.writeLog(BMLogMessages.extractedMesoNosePayload(jsonCandidate))
                 handleMesoNosePacket(jsonCandidate)
             }
         }
     }
 
     func cancelPurgeTimer() {
-        // 1. Cancel active background dispatch work item if running
         postTestPurgeWorkItem?.cancel()
         postTestPurgeWorkItem = nil
         
-        // 2. Clear purge completion timestamp on main thread so UI updates immediately
         DispatchQueue.main.async {
             self.lastTestCompletedDate = nil
-            AppLogger.writeLog("Moisture purge timer cancelled and state cleared.")
+            AppLogger.writeLog(BMLogMessages.purgeCancelled)
         }
     }
+
     private func connectToPeripheral(_ peripheral: CBPeripheral, deviceName: String) {
         connectedPeripherals[peripheral.identifier] = peripheral
-        incomingBuffers[peripheral.identifier] = ""
+        incomingBuffers[peripheral.identifier] = BMConstants.emptyString
         peripheral.delegate = self
 
         DispatchQueue.main.async {
-            self.statusText = "Connecting to \(deviceName)..."
+            self.statusText = BMConstants.statusConnectingTo(deviceName)
         }
 
         self.centralManager?.connect(peripheral, options: nil)
@@ -569,21 +771,21 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
 
     private func extractJSONObjects(from buffer: inout String) -> [String] {
         var results: [String] = []
-        var depth = 0
+        var depth = BMConstants.zeroInt
         var startIndex: String.Index? = nil
         var lastParsedEndIndex: String.Index? = nil
 
         for index in buffer.indices {
             let char = buffer[index]
-            if char == "{" {
-                if depth == 0 {
+            if String(char) == BMConstants.jsonObjectStart {
+                if depth == BMConstants.zeroInt {
                     startIndex = index
                 }
-                depth += 1
-            } else if char == "}" {
-                if depth > 0 {
-                    depth -= 1
-                    if depth == 0, let start = startIndex {
+                depth += BMConstants.singleCount
+            } else if String(char) == BMConstants.jsonObjectEnd {
+                if depth > BMConstants.zeroInt {
+                    depth -= BMConstants.singleCount
+                    if depth == BMConstants.zeroInt, let start = startIndex {
                         let jsonString = String(buffer[start...index])
                         results.append(jsonString)
                         lastParsedEndIndex = index
@@ -595,7 +797,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol, CBCentralManagerDel
 
         if let lastEnd = lastParsedEndIndex {
             let nextIndex = buffer.index(after: lastEnd)
-            buffer = (nextIndex < buffer.endIndex) ? String(buffer[nextIndex...]) : ""
+            buffer = (nextIndex < buffer.endIndex) ? String(buffer[nextIndex...]) : BMConstants.emptyString
         }
 
         return results
