@@ -15,7 +15,8 @@ struct MesoNoseConstants {
     static let zeroDouble: Double = 0.0
     static let zeroInt: Int = 0
     static let secondsPerMinute: Int = 60
-    static let transientWarmupVocThreshold: Int = 2_000_000
+    // Transient cold-boot heating floor (near-zero short circuits < 1000 ohms)
+    static let transientWarmupVocFloor: Int = 1_000
 }
 
 struct MesoNosePayloadKeys {
@@ -305,12 +306,17 @@ extension BluetoothManager {
     }
 
     func startPairingMesoNose() {
-        savedMesoNoseUUID = nil
-        ignoredMesoNoseUUID = nil
-        isPairingModeActive = true
-        statusText = MesoNoseUIStrings.searchingNearby
-        AppLogger.writeLog(MesoNoseLogMessages.pairingModeActive)
-        startScanning()
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            self.savedMesoNoseUUID = nil
+            self.ignoredMesoNoseUUID = nil
+            self.isPairingModeActive = true
+            self.statusText = MesoNoseUIStrings.searchingNearby
+            AppLogger.writeLog(MesoNoseLogMessages.pairingModeActive)
+
+            self.startScanning()
+        }
     }
 
     func stopSampling() {
@@ -333,6 +339,8 @@ extension BluetoothManager {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
+            AppLogger.writeLog("[TRACE]: triggerBreathTest invoked. Current State: \(self.breathTestState)")
+
             if self.breathTestState == .coldBootWarmup {
                 AppLogger.writeLog(MesoNoseLogMessages.warmupBlocked)
                 self.statusText = MesoNoseUIStrings.warmingUpBlocked
@@ -344,6 +352,7 @@ extension BluetoothManager {
                     || self.breathTestState == .completed
                     || self.breathTestState == .timeout
             else {
+                AppLogger.writeLog("[TRACE]: triggerBreathTest blocked because state is \(self.breathTestState)")
                 return
             }
 
@@ -363,6 +372,7 @@ extension BluetoothManager {
 
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self = self, self.breathTestState == .warmingUp else {
+                    AppLogger.writeLog("[TRACE]: Preheat work item aborted. State changed.")
                     return
                 }
 
@@ -381,23 +391,23 @@ extension BluetoothManager {
 
     func handleMesoNosePacket(_ text: String) {
         guard let data = text.data(using: .utf8),
-            let jsonObj = try? JSONSerialization.jsonObject(with: data)
-                as? [String: Any]
+              let jsonObj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
+            AppLogger.writeLog("[TRACE]: Ingesting MesoNose Packet -> \(text)")
+
             if let sample = MesoNoseSample(jsonString: text),
-                let bat = sample.battery, bat > MesoNoseConstants.zeroInt
-            {
+               let bat = sample.battery, bat > MesoNoseConstants.zeroInt {
                 self.mesoNoseBattery = bat
             }
 
             // 1. Handle status flags using MesoNoseFirmwareStatus
             if let statusStr = jsonObj[MesoNosePayloadKeys.status] as? String,
-                let status = MesoNoseFirmwareStatus(rawValue: statusStr)
-            {
+               let status = MesoNoseFirmwareStatus(rawValue: statusStr) {
+                AppLogger.writeLog("[TRACE]: Detected Firmware Status Flag -> \(status.rawValue)")
                 switch status {
                 case .breathTestStarted:
                     AppLogger.writeLog(MesoNoseLogMessages.testStarted)
@@ -413,25 +423,17 @@ extension BluetoothManager {
 
             // 2. Handle state transitions using MesoNoseFirmwareState
             if let stateStr = jsonObj[MesoNosePayloadKeys.state] as? String,
-                let state = MesoNoseFirmwareState(rawValue: stateStr)
-            {
+               let state = MesoNoseFirmwareState(rawValue: stateStr) {
+                AppLogger.writeLog("[TRACE]: Detected Firmware State Transition -> \(state.rawValue)")
                 switch state {
                 case .coldBootWarmingUp:
                     self.breathTestState = .coldBootWarmup
-                    if let remainingSec = jsonObj[
-                        MesoNosePayloadKeys.remainingSec
-                    ] as? Int {
-                        let mins =
-                            remainingSec / MesoNoseConstants.secondsPerMinute
-                        let secs =
-                            remainingSec % MesoNoseConstants.secondsPerMinute
-                        self.statusText = MesoNoseUIStrings.warmingUpFormatted(
-                            mins: mins,
-                            secs: secs
-                        )
+                    if let remainingSec = jsonObj[MesoNosePayloadKeys.remainingSec] as? Int {
+                        let mins = remainingSec / MesoNoseConstants.secondsPerMinute
+                        let secs = remainingSec % MesoNoseConstants.secondsPerMinute
+                        self.statusText = MesoNoseUIStrings.warmingUpFormatted(mins: mins, secs: secs)
                     } else {
-                        self.statusText =
-                            MesoNoseUIStrings.sensorWarmingUpColdBoot
+                        self.statusText = MesoNoseUIStrings.sensorWarmingUpColdBoot
                     }
                     return
 
@@ -452,11 +454,15 @@ extension BluetoothManager {
                     return
 
                 case .testingSensingBreath:
+                    self.blowTimeoutTimer?.invalidate()
+                    self.blowTimeoutTimer = nil
                     self.breathTestState = .processing
                     self.statusText = MesoNoseUIStrings.analyzingBreath
                     return
 
                 case .recoveringCalculatingT50:
+                    self.blowTimeoutTimer?.invalidate()
+                    self.blowTimeoutTimer = nil
                     self.breathTestState = .processing
                     self.statusText = MesoNoseUIStrings.calculatingT50
                     return
@@ -492,40 +498,40 @@ extension BluetoothManager {
             // 3. Handle Sample Payload & PTC Results
             guard let sample = MesoNoseSample(jsonString: text) else { return }
 
-            guard
-                sample.temp > MesoNoseConstants.zeroDouble
-                    && sample.humidity > MesoNoseConstants.zeroDouble
-            else { return }
+            guard sample.temp > MesoNoseConstants.zeroDouble && sample.humidity > MesoNoseConstants.zeroDouble else { return }
 
-            let hasValidBreathResult =
-                sample.breathDropDelta > MesoNoseConstants.zeroDouble
-                || (sample.ptcResult != MesoNoseResult.none.rawValue
-                    && !sample.ptcResult.isEmpty)
-            let isTransientWarmupSpike =
-                sample.voc > MesoNoseConstants.transientWarmupVocThreshold
-                && !hasValidBreathResult
+            let hasValidBreathResult = sample.breathDropDelta > MesoNoseConstants.zeroDouble ||
+                (sample.ptcResult != MesoNoseResult.none.rawValue && !sample.ptcResult.isEmpty)
 
-            guard !isTransientWarmupSpike else { return }
+            let isTransientWarmupSpike = sample.voc < MesoNoseConstants.transientWarmupVocFloor && !hasValidBreathResult
 
+            if isTransientWarmupSpike {
+                AppLogger.writeLog("[TRACE]: Dropped transient warmup spike [VOC: \(sample.voc)]")
+                return
+            }
+
+            // Mark live telemetry as received over BLE
+            self.hasReceivedLiveTelemetry = true
             self.saveMesoNoseToDatabase(sample)
 
             if hasValidBreathResult {
-                self.statusText = MesoNoseUIStrings.analysisComplete
-                self.mesoNoseSamples.insert(
-                    sample,
-                    at: MesoNoseConstants.zeroInt
-                )
-                self.handleBreathTestCompletion(didSucceed: true)
-            } else if self.breathTestState != .blowNow
-                && self.breathTestState != .processing
-            {
-                self.mesoNoseSamples.insert(
-                    sample,
-                    at: MesoNoseConstants.zeroInt
-                )
-                if self.breathTestState == .coldBootWarmup
-                    || self.breathTestState == .warmingUp
-                {
+                // Check if the top sample in memory is identical to avoid UI duplicates
+                let isDuplicateInMemory = self.mesoNoseSamples.first.map {
+                    $0.voc == sample.voc && $0.breathDropDelta == sample.breathDropDelta && $0.ptcResult == sample.ptcResult
+                } ?? false
+
+                if !isDuplicateInMemory {
+                    self.statusText = MesoNoseUIStrings.analysisComplete
+                    self.mesoNoseSamples.insert(sample, at: MesoNoseConstants.zeroInt)
+                    self.handleBreathTestCompletion(didSucceed: true)
+                } else {
+                    AppLogger.writeLog("[TRACE]: Skipped in-memory duplicate result insertion.")
+                }
+            } else if self.breathTestState != .blowNow && self.breathTestState != .processing {
+                AppLogger.writeLog("[TRACE]: Ingested Ambient Telemetry Sample [Temp: \(sample.temp), RH: \(sample.humidity), VOC: \(sample.voc)]")
+                self.mesoNoseSamples.insert(sample, at: MesoNoseConstants.zeroInt)
+
+                if self.breathTestState == .coldBootWarmup || self.breathTestState == .warmingUp {
                     self.breathTestState = .idle
                     self.statusText = MesoNoseUIStrings.connectedReady
                     AppLogger.writeLog(MesoNoseLogMessages.warmupComplete)
@@ -535,9 +541,13 @@ extension BluetoothManager {
     }
 
     private func transitionToBlowNow() {
-        self.breathTestState = .blowNow
-        self.statusText = MesoNoseUIStrings.blowNow
-        self.startBlowTimeoutGuard()
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            AppLogger.writeLog("[TRACE]: Executing transitionToBlowNow(). Setting state = .blowNow")
+            self.breathTestState = .blowNow
+            self.statusText = MesoNoseUIStrings.blowNow
+            self.startBlowTimeoutGuard()
+        }
     }
 
     private func startBlowTimeoutGuard() {
@@ -552,9 +562,7 @@ extension BluetoothManager {
             DispatchQueue.main.async {
                 guard let self = self else { return }
 
-                if self.breathTestState == .blowNow
-                    || self.breathTestState == .processing
-                {
+                if self.breathTestState == .blowNow || self.breathTestState == .processing {
                     AppLogger.writeLog(MesoNoseLogMessages.blowWindowTimedOut)
                     self.statusText = MesoNoseUIStrings.noBreathDetected
                     self.handleBreathTestCompletion(didSucceed: false)
@@ -566,6 +574,8 @@ extension BluetoothManager {
     func cancelBreathTest() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+
+            AppLogger.writeLog("[TRACE]: Executing cancelBreathTest(). Setting state = .idle")
 
             self.preheatWorkItem?.cancel()
             self.preheatWorkItem = nil
@@ -590,10 +600,12 @@ extension BluetoothManager {
 
     @MainActor
     func handleBreathTestCompletion(didSucceed: Bool) {
-        guard
-            self.breathTestState != .completed
-                && self.breathTestState != .timeout
-        else { return }
+        AppLogger.writeLog("[TRACE]: handleBreathTestCompletion called (Success: \(didSucceed)). Current state = \(self.breathTestState)")
+
+        guard self.breathTestState != .completed && self.breathTestState != .timeout else {
+            AppLogger.writeLog("[TRACE]: handleBreathTestCompletion skipped - already completed/timed out.")
+            return
+        }
 
         self.preheatWorkItem?.cancel()
         self.preheatWorkItem = nil
@@ -602,43 +614,24 @@ extension BluetoothManager {
         self.blowTimeoutTimer?.invalidate()
         self.blowTimeoutTimer = nil
 
-        self.lastTestCompletedDate = Date()
+        self.lastTestCompletedDate = nil
         self.breathTestState = didSucceed ? .completed : .timeout
 
-        AppLogger.writeLog(
-            MesoNoseLogMessages.testFinished(succeeded: didSucceed)
-        )
+        AppLogger.writeLog(MesoNoseLogMessages.testFinished(succeeded: didSucceed))
 
-        //        let purgeWorkItem = DispatchWorkItem { [weak self] in
-        //            guard let self = self else { return }
-        //
-        //            AppLogger.writeLog(MesoNoseLogMessages.activatingPurge)
-        //            self.sendMesoNoseCommand(.setActiveSamplingMode)
-        //
-        //            let revertWorkItem = DispatchWorkItem { [weak self] in
-        //                guard let self = self else { return }
-        //                self.sendMesoNoseCommand(.setUltraLowSamplingMode)
-        //                AppLogger.writeLog(MesoNoseLogMessages.purgeCompleted)
-        //            }
-        //
-        //            self.postTestPurgeWorkItem = revertWorkItem
-        //            DispatchQueue.main.asyncAfter(
-        //                deadline: .now() + AppConfig.postTestPurgeDuration,
-        //                execute: revertWorkItem
-        //            )
-        //        }
-        //
-        //        self.postTestPurgeWorkItem = purgeWorkItem
-        //        DispatchQueue.main.asyncAfter(
-        //            deadline: .now() + AppConfig.firmwareTeardownDelay,
-        //            execute: purgeWorkItem
-        //        )
-
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + AppConfig.firmwareTeardownDelay
-        ) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + AppConfig.firmwareTeardownDelay) { [weak self] in
             guard let self = self else { return }
+            AppLogger.writeLog("[TRACE]: Teardown delay elapsed. Dispatching set_ultra_low_sampling_mode.")
             self.sendMesoNoseCommand(.setUltraLowSamplingMode)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self = self else { return }
+                if self.breathTestState == .completed || self.breathTestState == .timeout {
+                    AppLogger.writeLog("[TRACE]: Auto-resetting breathTestState back to .idle.")
+                    self.breathTestState = .idle
+                    self.statusText = MesoNoseUIStrings.connectedReady
+                }
+            }
         }
     }
 }
@@ -653,8 +646,7 @@ extension String {
         }
 
         guard let data = trimmed.data(using: .utf8),
-            let json = try? JSONSerialization.jsonObject(with: data)
-                as? [String: Any]
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             return false
         }

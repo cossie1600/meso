@@ -513,6 +513,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   }
   void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) { 
     deviceConnected = false; 
+    adjustAdvertisingPower(true);
   }
 };
 
@@ -535,15 +536,23 @@ void adjustAdvertisingPower(bool newlyDisconnected) {
   if (newlyDisconnected) {
     disconnectTime = millis();
     isInLowPowerAdvertising = false;
+    pAdvertising->stop();
     pAdvertising->setMinInterval(BLE_ADV_FAST_MIN_INTERVAL_UNITS);
     pAdvertising->setMaxInterval(BLE_ADV_FAST_MAX_INTERVAL_UNITS);
     pAdvertising->start();
-  } else if (!deviceConnected && !isInLowPowerAdvertising && ((millis() - disconnectTime) > FAST_ADV_BURST_WINDOW_MS)) {
-    isInLowPowerAdvertising = true;
-    pAdvertising->stop();
-    pAdvertising->setMinInterval(BLE_ADV_ULP_MIN_INTERVAL_UNITS);
-    pAdvertising->setMaxInterval(BLE_ADV_ULP_MAX_INTERVAL_UNITS);
-    pAdvertising->start();
+    logMessage("[BLE ADV]: Fast Advertising Started (30s window).");
+  } else if (!deviceConnected) {
+    if (!isInLowPowerAdvertising && ((millis() - disconnectTime) > FAST_ADV_BURST_WINDOW_MS)) {
+      isInLowPowerAdvertising = true;
+      pAdvertising->stop();
+      pAdvertising->setMinInterval(BLE_ADV_ULP_MIN_INTERVAL_UNITS);
+      pAdvertising->setMaxInterval(BLE_ADV_ULP_MAX_INTERVAL_UNITS);
+      pAdvertising->start();
+      logMessage("[BLE ADV]: Transitioned to Ultra Low Power Advertising.");
+    } else if (!pAdvertising->isAdvertising()) {
+      // Recovery guard: If advertising stopped unexpectedly while disconnected, restart it
+      pAdvertising->start();
+    }
   }
 }
 

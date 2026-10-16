@@ -9,7 +9,7 @@ import SwiftUI
 
 struct MesoNoseHistoryView: View {
     @ObservedObject var bleManager: BluetoothManager
-    
+
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
             LazyVStack(spacing: AppConfig.DashboardUI.metricGridSpacing) {
@@ -38,12 +38,12 @@ struct MesoNoseHistoryView: View {
 
 struct MesoNoseSampleCard: View {
     let sample: MesoNoseSample
-    
+
     private let miniGridColumns = [
         GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10)
+        GridItem(.flexible(), spacing: 10),
     ]
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Header Row: Timestamp & Battery Level
@@ -52,16 +52,16 @@ struct MesoNoseSampleCard: View {
                     .font(.caption)
                     .fontWeight(.bold)
                     .foregroundColor(Color.appPrimaryText)
-                
+
                 Spacer()
-                
+
                 BatteryIndicatorView(
                     batteryPercentage: sample.battery,
                     fontSize: 11,
                     iconSize: 11
                 )
             }
-            
+
             // 2x2 Telemetry Grid
             LazyVGrid(columns: miniGridColumns, spacing: 10) {
                 SquareMetricCard(
@@ -70,21 +70,21 @@ struct MesoNoseSampleCard: View {
                     unit: "°C",
                     size: 80
                 )
-                
+
                 SquareMetricCard(
                     label: "Humidity",
                     value: String(format: "%.1f", sample.humidity),
                     unit: "%",
                     size: 80
                 )
-                
+
                 SquareMetricCard(
                     label: "Pressure",
                     value: String(format: "%.1f", sample.pressure),
                     unit: "hPa",
                     size: 80
                 )
-                
+
                 SquareMetricCard(
                     label: "VOC",
                     value: "\(sample.voc)",

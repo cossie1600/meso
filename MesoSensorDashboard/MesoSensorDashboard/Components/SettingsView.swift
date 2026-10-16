@@ -129,15 +129,14 @@ struct SettingsView: View {
                                         Button(action: {
                                             bluetoothManager.startPairingMesoNose()
                                         }) {
-                                            Text("Start Pairing")
-                                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                            Text(bluetoothManager.isPairingModeActive ? "Searching..." : "Start Pairing")
+                                                .font(.system(size: 17, weight: .bold, design: .rounded))
                                                 .foregroundColor(.white)
                                                 .frame(maxWidth: .infinity)
-                                                .frame(height: 48)
+                                                .frame(height: 50)
                                                 .background(Color.appPrimaryText)
                                                 .cornerRadius(12)
                                         }
-                                        .buttonStyle(.plain)
                                     }
                                 }
                                 .padding(16)

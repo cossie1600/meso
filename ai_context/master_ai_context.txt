@@ -495,3 +495,111 @@ print("Updated MASTER_AI_CONTEXT.md successfully. Total length:", len(full_ai_co
 Section 8 has been modified to replace the outdated rules in 8.3 and 8.4 with the updated result string constants and the code matrix mapping table. The file now contains Sections 1 through 8.
 
 ```
+
+================================================================================
+MASTER AI CONTEXT & ARCHITECTURAL LOG (UPDATED OCTOBER 2026)
+================================================================================
+
+1. UNIVERSAL CODING RULES:
+   - Zero Emojis across all firmware, iOS code, logs, comments, and headers.
+   - Zero Magic Numbers & Strings: Centralize constants in typed structs.
+   - Strict Isolation & Minimal Scope Edits.
+
+2. BLE ADVERTISING & PAIRING STATE MACHINE (FIRMWARE & iOS):
+   - Firmware Disconnect Recovery: ServerCallbacks::onDisconnect invokes adjustAdvertisingPower(true) to trigger a 30s fast advertising burst (BLE_ADV_FAST_MIN_INTERVAL_UNITS = 160).
+   - Advertising Power Fallback: After 30s of no connection, firmware transitions to ULP advertising (BLE_ADV_ULP_MIN_INTERVAL_UNITS = 1600).
+   - iOS In-App Pairing: Tapping "Start Pairing" in SettingsView clears savedMesoNoseUUID = nil, enables isPairingModeActive = true, and scans via centralManager.
+
+3. SENSOR STABILIZING & TELEMETRY INGESTION:
+   - BME688 Resistance Threshold: transientWarmupVocFloor = 1000 Ohms. Valid ambient readings (> 1000 Ohms) transition breathTestState to .idle and dismiss readiness overlay.
+   - Ambient Freshness Window: maxAmbientSampleAgeSeconds = 300.0s (5 minutes).
+
+4. DESORPTION RECOVERY KINETICS (T50):
+   - Formula: R_target50 = R_min + 0.5 * (R_base - R_min).
+   - Classification: Fast Recovery (T50 < 3.5s) vs. Slow Recovery (T50 >= 3.5s) for Volatile Sulfur Compounds.
+================================================================================
+
+I have completely updated our master context and architectural specifications to lock in the new firmware file name **`meso_nose_pure_bsec_kinetics.ino`**, along with the updated NimBLE fast advertising recovery loop fix (`adjustAdvertisingPower(true)` on `onDisconnect`) and the full codebase structure.
+
+---
+
+### Step-by-Step Blueprint: Enabling Native iOS Settings Bluetooth Security Bonding
+
+When you are ready to enable native iOS System Settings pairing in a future session, here is the complete, multi-layered blueprint to execute without introducing regressions.
+
+#### Phase 1: Firmware Security Upgrades (`meso_nose_pure_bsec_kinetics.ino`)
+
+1. **Enable Security Authentication & IO Capabilities in `setup()`:**
+Tell the NimBLE stack to require **LE Secure Connections** and **Bonding**:
+```cpp
+// Enable bonding, MITM protection, and secure connections
+NimBLEDevice::setSecurityAuth(true, true, true);
+NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT); // JustWorks numeric pairing
+
+```
+
+
+2. **Restrict GATT Characteristic Permissions to Encrypted Streams Only:**
+Update characteristic creation in `setup()` to enforce encrypted Read/Write/Notify access:
+```cpp
+pCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID,
+    NIMBLE_PROPERTY::READ |
+    NIMBLE_PROPERTY::WRITE |
+    NIMBLE_PROPERTY::NOTIFY |
+    NIMBLE_PROPERTY::READ_ENC |   // Requires Encryption
+    NIMBLE_PROPERTY::WRITE_ENC    // Requires Encryption
+);
+
+```
+
+
+3. **Handle Disconnect & Unbonding Cleanslate (`ServerCallbacks`):**
+Ensure that when a bond is cleared or reset, NimBLE cleans its non-volatile storage (NVS) keys to avoid stale key mismatches when pairing with a new phone.
+
+---
+
+#### Phase 2: iOS App Stack Updates (`BluetoothManager` & `BluetoothManager+CentralManager.swift`)
+
+1. **Handle `CBATTError.insufficientEncryption` in `CBPeripheralDelegate`:**
+When the app connects to the newly encrypted characteristic, iOS automatically catches the `insufficientEncryption` response from the firmware and triggers the native OS **"Bluetooth Pairing Request"** popup dialog.
+2. **Store System Bond References:**
+Update `BluetoothManager` to detect when a system bond is established, storing the bonded peripheral's `identifier` so that future launches bypass the active proximity scan and connect directly via `centralManager.retrievePeripherals(withIdentifiers:)`.
+
+---
+
+### Updated Master Context File (`master_ai_context.txt`)
+
+Here is our updated context specification reflecting **`meso_nose_pure_bsec_kinetics.ino`**, the BLE advertising state machine fix, and our complete architectural rules:
+
+```text
+================================================================================
+MASTER AI CONTEXT & ARCHITECTURAL LOG (UPDATED OCTOBER 2026)
+================================================================================
+
+1. UNIVERSAL CODING RULES:
+   - Zero Emojis across all firmware, iOS code, logs, comments, and headers.
+   - Zero Magic Numbers & Strings: Centralize constants in typed structs.
+   - Strict Isolation & Minimal Scope Edits.
+
+2. FIRMWARE FILE & BLE ADVERTISING ARCHITECTURE:
+   - Primary Firmware Sketch Name: meso_nose_pure_bsec_kinetics.ino
+   - Advertising State Machine Recovery: ServerCallbacks::onDisconnect calls adjustAdvertisingPower(true) to launch a 30s fast advertising burst (BLE_ADV_FAST_MIN_INTERVAL_UNITS = 160).
+   - Low Power Fallback: Transitions to ULP advertising (BLE_ADV_ULP_MIN_INTERVAL_UNITS = 1600) after 30s window.
+   - Dynamic Mode Orchestration: Autonomous firmware power state control (ULP 300s / LP 3s). No manual mode toggles exposed in iOS SettingsView.
+
+3. iOS BLE PAIRING & DISCOVERY (`MesoSensorDashboard`):
+   - In-App Pairing Flow: Tapping "Start Pairing" in SettingsView clears savedMesoNoseUUID = nil, enables isPairingModeActive = true, and scans via centralManager.
+   - Service UUID Inspection: didDiscover inspects CBAdvertisementDataServiceUUIDsKey for target Service UUID (4fa215f0-0001-4b0e-b682-1a4c70f3a601) to catch short or unnamed advertising packets.
+   - Native iOS Settings Bonding Blueprint: Prepared for future deployment by configuring NimBLE setSecurityAuth(true, true, true) and NIMBLE_PROPERTY::READ_ENC / WRITE_ENC in firmware.
+
+4. SENSOR STABILIZING & TELEMETRY INGESTION:
+   - BME688 Resistance Threshold: transientWarmupVocFloor = 1000 Ohms. Valid ambient readings (> 1000 Ohms) auto-transition breathTestState to .idle and dismiss readiness overlay.
+   - Ambient Freshness Window: maxAmbientSampleAgeSeconds = 300.0s (5 minutes).
+
+5. DESORPTION RECOVERY KINETICS (T50):
+   - Formula: R_target50 = R_min + 0.5 * (R_base - R_min).
+   - Classification: Fast Recovery (T50 < 3.5s) vs. Slow Recovery (T50 >= 3.5s) for Volatile Sulfur Compounds.
+================================================================================
+
+```
