@@ -387,6 +387,37 @@ extension BluetoothManager {
                 execute: workItem
             )
         }
+    }   
+
+    func processFirmwareStateTransition(_ stateString: String) {
+        AppLogger.writeLog("[TRACE]: Detected Firmware State Transition -> \(stateString)")
+
+        switch stateString {
+        case "READY_PLEASE_BLOW":
+            transitionToBlowNow()
+
+        case "TESTING_SENSING_BREATH":
+            // Reject late sequence transition if local test is no longer active
+            guard breathTestState == .blowNow || breathTestState == .warmingUp else {
+                AppLogger.writeLog("[TRACE]: Ignored TESTING_SENSING_BREATH because local test is no longer active (\(breathTestState)).")
+                return
+            }
+            self.blowTimeoutTimer?.invalidate()
+            self.breathTestState = .processing
+
+        case "RECOVERING_CALCULATING_T50":
+            guard breathTestState == .processing else {
+                AppLogger.writeLog("[TRACE]: Ignored RECOVERING_CALCULATING_T50 because state is \(breathTestState).")
+                return
+            }
+            self.breathTestState = .processing
+
+        case "TIMEOUT", "EXHALATION_TOO_WEAK":
+            handleBreathTestCompletion(didSucceed: false, failureReason: stateString)
+
+        default:
+            break
+        }
     }
 
     func handleMesoNosePacket(_ text: String) {
@@ -599,14 +630,16 @@ extension BluetoothManager {
 extension BluetoothManager {
 
     @MainActor
-    func handleBreathTestCompletion(didSucceed: Bool) {
+    func handleBreathTestCompletion(didSucceed: Bool, failureReason: String? = nil) {
         AppLogger.writeLog("[TRACE]: handleBreathTestCompletion called (Success: \(didSucceed)). Current state = \(self.breathTestState)")
 
+        // Guard against re-entrant calls if already in a terminal state
         guard self.breathTestState != .completed && self.breathTestState != .timeout else {
             AppLogger.writeLog("[TRACE]: handleBreathTestCompletion skipped - already completed/timed out.")
             return
         }
 
+        // 1. Cancel pending timers and work items
         self.preheatWorkItem?.cancel()
         self.preheatWorkItem = nil
         self.postTestPurgeWorkItem?.cancel()
@@ -617,14 +650,23 @@ extension BluetoothManager {
         self.lastTestCompletedDate = nil
         self.breathTestState = didSucceed ? .completed : .timeout
 
-        AppLogger.writeLog(MesoNoseLogMessages.testFinished(succeeded: didSucceed))
+        // 2. Log completion or specific failure reason
+        if didSucceed {
+            AppLogger.writeLog(MesoNoseLogMessages.testFinished(succeeded: true))
+        } else {
+            let reason = failureReason ?? BMConstants.defaultFailureReason
+            AppLogger.writeLog("[TRACE]: Breath evaluation failed with reason: \(reason)")
+            AppLogger.writeLog(MesoNoseLogMessages.testFinished(succeeded: false))
+        }
 
+        // 3. Queue firmware teardown delay (Ultra Low Power mode switch)
         DispatchQueue.main.asyncAfter(deadline: .now() + AppConfig.firmwareTeardownDelay) { [weak self] in
             guard let self = self else { return }
             AppLogger.writeLog("[TRACE]: Teardown delay elapsed. Dispatching set_ultra_low_sampling_mode.")
             self.sendMesoNoseCommand(.setUltraLowSamplingMode)
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            // 4. Reset state back to .idle after UI display hold window
+            DispatchQueue.main.asyncAfter(deadline: .now() + BMConstants.uiDisplayHoldDurationSeconds) { [weak self] in
                 guard let self = self else { return }
                 if self.breathTestState == .completed || self.breathTestState == .timeout {
                     AppLogger.writeLog("[TRACE]: Auto-resetting breathTestState back to .idle.")

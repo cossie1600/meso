@@ -9,6 +9,7 @@ struct VotreAirDashboardView: View {
     @ObservedObject var bleManager: BluetoothManager
 
     @State private var visibleCardCount: Int = UIConstants.initialCardLimit
+    @State private var highlightedSampleID: Date? = nil
 
     private struct UIConstants {
         static let sectionTitle = "YOUR AIR INSIGHTS"
@@ -21,6 +22,8 @@ struct VotreAirDashboardView: View {
         static let buttonHeight: CGFloat = 36.0
         static let buttonCornerRadius: CGFloat = 10.0
         static let outerPadding: CGFloat = 16.0
+        
+        static let newResultHighlightDuration: Double = 3.0
     }
 
     private var latestSample: MesoNoseSample? {
@@ -57,7 +60,7 @@ struct VotreAirDashboardView: View {
         }
     }
 
-    /// All unique valid historical breath test evaluation samples in memory (sorted latest first)
+    /// All unique valid historical breath test evaluation samples in memory
     private var allBreathSamples: [MesoNoseSample] {
         var uniqueSamples: [MesoNoseSample] = []
 
@@ -76,7 +79,7 @@ struct VotreAirDashboardView: View {
         return uniqueSamples
     }
 
-    /// Paginated subset of unique diagnostic result cards currently displayed to the user
+    /// Paginated subset of unique diagnostic result cards currently displayed
     private var visibleBreathSamples: [MesoNoseSample] {
         Array(allBreathSamples.prefix(visibleCardCount))
     }
@@ -93,10 +96,10 @@ struct VotreAirDashboardView: View {
                         batteryIconName: batteryIconName
                     )
 
-                    // Integrated Breath Odor Insight Action Card
+                    // Integrated Breath Odor Insight Action Card (Without status row)
                     BreathOdorInsightCard(bleManager: bleManager)
 
-                    // Your Air Insights Section (Paginated SQLite Cards)
+                    // Your Air Insights Section
                     if !allBreathSamples.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(UIConstants.sectionTitle)
@@ -104,12 +107,21 @@ struct VotreAirDashboardView: View {
                                 .foregroundColor(Color.appSecondaryText)
                                 .padding(.horizontal, 4)
 
-                            // Render strictly unique diagnostic result cards (Latest on top)
+                            // Render unique diagnostic cards
                             ForEach(visibleBreathSamples, id: \.timestamp) { sample in
+                                let isNewResult = (sample.timestamp == highlightedSampleID)
+                                
                                 MesoNoseResultCard(sample: sample)
+                                    .scaleEffect(isNewResult ? 1.03 : 1.0)
+                                    .shadow(color: isNewResult ? Color.green.opacity(0.40) : Color.clear, radius: 8)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .stroke(isNewResult ? Color.green : Color.clear, lineWidth: 2)
+                                    )
+                                    .animation(.easeInOut(duration: 0.4), value: isNewResult)
                             }
 
-                            // Lazy-loading trigger button when more historical records exist in memory
+                            // Lazy-loading pagination button
                             if visibleCardCount < allBreathSamples.count {
                                 Button(action: {
                                     withAnimation(.smooth) {
@@ -133,6 +145,20 @@ struct VotreAirDashboardView: View {
                 .padding(UIConstants.outerPadding)
             }
             .globalAppBackground()
+            .onChange(of: bleManager.breathTestState) { _, newState in
+                if newState == .completed, let newestSample = allBreathSamples.first {
+                    // Highlight the brand new result card for exactly 3 seconds
+                    withAnimation {
+                        highlightedSampleID = newestSample.timestamp
+                    }
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + UIConstants.newResultHighlightDuration) {
+                        withAnimation {
+                            highlightedSampleID = nil
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -23,13 +23,16 @@ struct BMConstants {
     static let syncCompleteToken = "SYNC_COMPLETE"
     static let jsonObjectStart = "{"
     static let jsonObjectEnd = "}"
-    
+
     static let initialCardLimit: Int = 10
     static let pageSizeIncrement: Int = 10
 
+    static let defaultFailureReason = "TIMEOUT"
+    static let uiDisplayHoldDurationSeconds: Double = 3.0
     static let purgeWindowSeconds: TimeInterval = 180.0
     static let notificationStateDelaySeconds: Double = 0.3
     static let initialBurstDurationSeconds: Double = 15.0
+    static let blowWindowTimeoutSeconds: Double = 32.0
     static let proximityRSSIThreshold: Int = -65
     static let invalidRSSI: Int = 127
 
@@ -38,8 +41,8 @@ struct BMConstants {
     static let zeroVOC: Int = 0
     static let singleCount: Int = 1
     static let minUnsaturatedVOC: Int = 5000
-    static let maxUnsaturatedVOC: Int = 100_000_000 // 100M Ohms to accommodate clean ambient baselines
-    static let maxAmbientSampleAgeSeconds: TimeInterval = 300.0 // 5 minutes freshness window
+    static let maxUnsaturatedVOC: Int = 100_000_000  // 100M Ohms to accommodate clean ambient baselines
+    static let maxAmbientSampleAgeSeconds: TimeInterval = 300.0  // 5 minutes freshness window
 
     static let statusScanning = "Scanning for Meso Sensors..."
     static let statusPowerOff = "Bluetooth is turned off"
@@ -67,16 +70,24 @@ struct BMConstants {
 }
 
 struct BMLogMessages {
-    static let inMemoryDbInitialized = "In-Memory Test Database Container Initialized."
-    static let mockBridgeActive = "Mock Simulator Bridge Active. Bypassing BLE Hardware."
-    static let realHardwareActive = "Real BLE Hardware Mode Active. Instantiating Central Manager."
-    static let simulatorExecutionStopped = "Execution stopped: Cannot run BLE hardware on an iOS Simulator window."
-    static let bluetoothPoweredOn = "Bluetooth hardware status: Powered On. Beginning dual-device scan..."
+    static let inMemoryDbInitialized =
+        "In-Memory Test Database Container Initialized."
+    static let mockBridgeActive =
+        "Mock Simulator Bridge Active. Bypassing BLE Hardware."
+    static let realHardwareActive =
+        "Real BLE Hardware Mode Active. Instantiating Central Manager."
+    static let simulatorExecutionStopped =
+        "Execution stopped: Cannot run BLE hardware on an iOS Simulator window."
+    static let bluetoothPoweredOn =
+        "Bluetooth hardware status: Powered On. Beginning dual-device scan..."
     static let bluetoothPoweredOff = "Bluetooth hardware status: Powered Off."
-    static let bluetoothUnauthorized = "Bluetooth hardware status: Unauthorized. Check Info.plist keys."
-    static let startingScan = "Starting BLE peripheral scan for Meso Pin & Meso Nose..."
+    static let bluetoothUnauthorized =
+        "Bluetooth hardware status: Unauthorized. Check Info.plist keys."
+    static let startingScan =
+        "Starting BLE peripheral scan for Meso Pin & Meso Nose..."
     static let syncCompleteReceived = "Ingestion: Sync complete token received."
-    static let purgeCancelled = "Moisture purge timer cancelled and state cleared."
+    static let purgeCancelled =
+        "Moisture purge timer cancelled and state cleared."
 
     static func inMemoryDbFailed(_ error: String) -> String {
         "Failed to create temporary database container: \(error)"
@@ -98,11 +109,17 @@ struct BMLogMessages {
         "Updated saved Meso Nose UUID to: \(deviceID)"
     }
 
-    static func targetMatchFound(_ deviceName: String, _ deviceID: UUID) -> String {
+    static func targetMatchFound(_ deviceName: String, _ deviceID: UUID)
+        -> String
+    {
         "Target Match Found via Name: \(deviceName) [\(deviceID)]"
     }
 
-    static func pairingMatchFound(_ deviceName: String, _ deviceID: UUID, _ rssi: NSNumber) -> String {
+    static func pairingMatchFound(
+        _ deviceName: String,
+        _ deviceID: UUID,
+        _ rssi: NSNumber
+    ) -> String {
         "Pairing mode match found: \(deviceName) [ID: \(deviceID)] RSSI: \(rssi)"
     }
 
@@ -110,7 +127,9 @@ struct BMLogMessages {
         "Swift BLE: Successfully connected to: \(deviceName)"
     }
 
-    static func failedToConnect(_ deviceName: String, _ errorDesc: String) -> String {
+    static func failedToConnect(_ deviceName: String, _ errorDesc: String)
+        -> String
+    {
         "Swift BLE ERROR: Failed to establish link to \(deviceName): \(errorDesc)"
     }
 
@@ -130,7 +149,8 @@ struct BMLogMessages {
         "GATT Handshake Stalled: Zero services discovered for \(deviceName)."
     }
 
-    static func discoveredServices(_ count: Int, _ deviceName: String) -> String {
+    static func discoveredServices(_ count: Int, _ deviceName: String) -> String
+    {
         "Discovered \(count) services for \(deviceName). Discovering characteristics..."
     }
 
@@ -138,7 +158,9 @@ struct BMLogMessages {
         "GATT Characteristic Discovery Error: \(errorDesc)"
     }
 
-    static func cachedWriteChar(_ deviceName: String, _ uuidStr: String) -> String {
+    static func cachedWriteChar(_ deviceName: String, _ uuidStr: String)
+        -> String
+    {
         "  -> Cached Write Characteristic [\(deviceName)]: \(uuidStr)"
     }
 
@@ -146,15 +168,23 @@ struct BMLogMessages {
         "Executing queued command [\(rawValue)] after characteristic discovery."
     }
 
-    static func subscribingNotification(_ deviceName: String, _ uuidStr: String) -> String {
+    static func subscribingNotification(_ deviceName: String, _ uuidStr: String)
+        -> String
+    {
         "  -> Subscribing to Notification Stream [\(deviceName)]: \(uuidStr)"
     }
 
-    static func notificationStateError(_ deviceName: String, _ errorDesc: String) -> String {
+    static func notificationStateError(
+        _ deviceName: String,
+        _ errorDesc: String
+    ) -> String {
         "Notification State Error [\(deviceName)]: \(errorDesc)"
     }
 
-    static func notificationStateUpdated(_ isNotifying: Bool, _ deviceName: String) -> String {
+    static func notificationStateUpdated(
+        _ isNotifying: Bool,
+        _ deviceName: String
+    ) -> String {
         "Notification state updated to \(isNotifying) for \(deviceName)"
     }
 
@@ -162,9 +192,11 @@ struct BMLogMessages {
         "Handshake established while test active (\(state)). Skipping initial burst timer override."
     }
 
-    static let handshakeTriggeringBurst = "Handshake Established: Triggering 15s initial sampling burst for valid baseline..."
+    static let handshakeTriggeringBurst =
+        "Handshake Established: Triggering 15s initial sampling burst for valid baseline..."
 
-    static let initialBurstTestActive = "Initial burst complete, but breath test is active. Skipping background mode override."
+    static let initialBurstTestActive =
+        "Initial burst complete, but breath test is active. Skipping background mode override."
 
     static func initialBurstCompleteTransitioning(_ mode: String) -> String {
         "Initial burst capture complete. Transitioning to configured mode: \(mode)"
@@ -198,15 +230,17 @@ enum BreathTestState: Equatable, Sendable {
     case completed
     case timeout
 
-    nonisolated static func == (lhs: BreathTestState, rhs: BreathTestState) -> Bool {
+    nonisolated static func == (lhs: BreathTestState, rhs: BreathTestState)
+        -> Bool
+    {
         switch (lhs, rhs) {
         case (.idle, .idle),
-             (.coldBootWarmup, .coldBootWarmup),
-             (.warmingUp, .warmingUp),
-             (.blowNow, .blowNow),
-             (.processing, .processing),
-             (.completed, .completed),
-             (.timeout, .timeout):
+            (.coldBootWarmup, .coldBootWarmup),
+            (.warmingUp, .warmingUp),
+            (.blowNow, .blowNow),
+            (.processing, .processing),
+            (.completed, .completed),
+            (.timeout, .timeout):
             return true
         default:
             return false

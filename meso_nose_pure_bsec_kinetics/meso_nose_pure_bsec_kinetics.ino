@@ -66,11 +66,12 @@ constexpr uint32_t BREATH_SENSING_WINDOW_MS = 10000;
 constexpr uint32_t RECOVERY_SENSING_WINDOW_MS = 15000; 
 constexpr uint32_t POLL_TICK_DELAY_MS = 20;
 
-constexpr float BREATH_FRESH_MAX_DROP_PCT = 15.0f;
+constexpr float BREATH_MIN_SIGNIFICANT_DROP_PCT = 6.0f;    // 6.0% noise / mint floor
+constexpr float BREATH_FRESH_MAX_DROP_PCT       = 17.0f;   // 17.0% moderate drop threshold
 constexpr float BREATH_SIGNIFICANT_MAX_DROP_PCT = 45.0f;
 constexpr float DRY_MOUTH_MAX_DELTA_RH_PCT = 2.5f;
 constexpr float DRY_MOUTH_MIN_DELTA_CO2_PPM = 250.0f;
-constexpr float RECOVERY_LAG_MALODOR_THRESHOLD = 3.5f; 
+constexpr float RECOVERY_LAG_MALODOR_THRESHOLD = 4.2f; 
 
 constexpr uint8_t BASELINE_TARGET_SAMPLE_COUNT = 3; 
 constexpr uint32_t BASELINE_CAPTURE_TIMEOUT_MS = 15000UL;
@@ -318,28 +319,39 @@ String evaluateBreathResult(float deltaDrop, float maxDeltaHumidity, float maxDe
                           (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT || maxDeltaCO2 >= DRY_MOUTH_MIN_DELTA_CO2_PPM);
   const bool validMoisture = (maxDeltaHumidity >= DRY_MOUTH_MAX_DELTA_RH_PCT);
 
-  const bool isSlowRecovery = (recoveryLagSec >= RECOVERY_LAG_MALODOR_THRESHOLD); // >= 3.5s
-  const bool isFastRecovery = (recoveryLagSec < RECOVERY_LAG_MALODOR_THRESHOLD);   // < 3.5s
+  const bool isSlowRecovery = (recoveryLagSec >= RECOVERY_LAG_MALODOR_THRESHOLD); // >= 4.2s
+  const bool isFastRecovery = (recoveryLagSec < RECOVERY_LAG_MALODOR_THRESHOLD);   // < 4.2s
 
-  const bool isSubThresholdDrop = (deltaDrop < BREATH_FRESH_MAX_DROP_PCT); // < 15%
-  const bool isSlightDrop = (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT);
-  const bool isModerateDrop = (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT) && (deltaDrop < BREATH_SIGNIFICANT_MAX_DROP_PCT);
-  const bool isSevereDrop = (deltaDrop >= BREATH_SIGNIFICANT_MAX_DROP_PCT);
+  const bool isNegligibleDrop   = (deltaDrop < BREATH_MIN_SIGNIFICANT_DROP_PCT);   // < 6.0%
+  const bool isSubThresholdDrop = (deltaDrop >= BREATH_MIN_SIGNIFICANT_DROP_PCT) && (deltaDrop < BREATH_FRESH_MAX_DROP_PCT); // 6.0% - 17.0%
+  const bool isSlightDrop       = (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT);        // >= 17.0%
+  const bool isModerateDrop     = (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT) && (deltaDrop < BREATH_SIGNIFICANT_MAX_DROP_PCT); // 17.0% - 45.0%
+  const bool isSevereDrop       = (deltaDrop >= BREATH_SIGNIFICANT_MAX_DROP_PCT);   // >= 45.0%
 
-  // Dry mouth conditions
+  // 1. Dry mouth conditions
   if (isDryMouth && isFastRecovery) return RESULT_DRY_MOUTH_HYDRATE;
   if (isDryMouth && isSlowRecovery) return RESULT_DRY_MOUTH_VSC_BUILDUP;
 
-  // Sub-threshold drop (< 15%) conditions
+  // 2. Negligible gas drop (< 6.0%) -> Physiological fresh breath (Menthol / mint friendly)
+  if (validMoisture && isNegligibleDrop) return RESULT_BALANCED_BREATH;
+
+  // 3. Sub-threshold drop (6.0% - 17.0%) conditions
   if (validMoisture && isSubThresholdDrop && isFastRecovery) return RESULT_BALANCED_BREATH;
   if (validMoisture && isSubThresholdDrop && isSlowRecovery) return RESULT_SETTLE_BEVERAGE_FOOD_ODOR;
 
-  // Significant drop (>= 15%) conditions
+  // 4. Significant drop (>= 17.0%) conditions
   if (validMoisture && isSlightDrop && isFastRecovery) return RESULT_SOME_BEVERAGE_FOOD_ODOR;
   if (validMoisture && isModerateDrop && isSlowRecovery) return RESULT_NOTICEABLE_MALODOR;
   if (validMoisture && isSevereDrop && isSlowRecovery) return RESULT_STRONG_MALODOR;
 
   return RESULT_NONE;
+}
+
+void resetTestEvaluationData() {
+  sensorData.deltaDrop = 0.0f;
+  sensorData.recoveryLagSec = 0.0f;
+  sensorData.rBreathMin = 0;
+  sensorData.ptcResult = RESULT_NONE;
 }
 
 void processBreathTestResults(float baseRes, float minRes, float maxDeltaHumidity, float maxDeltaCO2, float recoveryLag) {
@@ -354,16 +366,13 @@ void processBreathTestResults(float baseRes, float minRes, float maxDeltaHumidit
 
   dispatchData("{\"status\":\"" + String(STATUS_BREATH_TEST_COMPLETE) + "\"}");
   dispatchData(sensorData.toJsonString());
+  resetTestEvaluationData();
 }
 
 void runBreathSequence() {
   logMessage("[SEQUENCE START]: Breath test sequence initiated (Pure BSEC LP).");
 
-  // Clear stale metrics from previous tests
-  sensorData.deltaDrop = 0.0f;
-  sensorData.recoveryLagSec = 0.0f;
-  sensorData.rBreathMin = 0;
-  sensorData.ptcResult = RESULT_NONE;
+  resetTestEvaluationData();
 
   float ambientCO2 = sensorData.currentCO2;
   float ambientTemp = sensorData.currentTemp;
