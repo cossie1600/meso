@@ -14,6 +14,7 @@
 #include "sensor_data.h"
 #include "diagnostics.h"
 #include "bsec_iaq.h"
+#include "breath_kinetics_engine.h"
 
 const uint8_t bsec_config_iaq[] = {
 #include "./bsec_selectivity.txt"
@@ -24,26 +25,29 @@ const uint8_t bsec_config_iaq[] = {
 
 #define VERBOSE_LOG(x) do { \
   if (ENABLE_VERBOSE_DEBUG) { \
-    Serial.println(String("[TRACE @ ") + millis() + "ms]: " + String(x)); \
+    logMessage(x); \
   } \
 } while(0)
 
-#define BATTERY_ADC_PIN 0
+// Pin definitions - ESP32-C6 Dev Module
+#define BATTERY_ADC_PIN 2
 #define I2C_SDA 6
 #define I2C_SCL 7
 #define SERVICE_UUID "4fa215f0-0001-4b0e-b682-1a4c70f3a601"
 #define CHARACTERISTIC_UUID "4fa215f0-0002-4b0e-b682-1a4c70f3a601"
 
 constexpr const char *DEVICE_BASE_NAME = "Meso Nose";
-String Device_Name;
+String Device_Name = String(DEVICE_BASE_NAME);
 
-const char *OFFLINE_FILE = "/offline_data.json";
+constexpr const char *OFFLINE_FILE_PATH = "/offline_data.json";
+constexpr const char *LITTLEFS_MOUNT_POINT = "/littlefs";
 
 constexpr unsigned long FIVE_MINUTES_IN_MS = 300000UL;
 constexpr size_t MAX_OFFLINE_FILE_SIZE_BYTES = 200000;
 constexpr uint32_t SERIAL_BAUD_RATE = 115200;
 constexpr uint32_t I2C_CLOCK_SPEED_HZ = 100000;
 constexpr uint32_t I2C_BUS_TIMEOUT_MS = 1000;
+constexpr uint32_t SERIAL_AUTO_FLUSH_TIMEOUT_MS = 250UL;
 
 constexpr uint16_t BLE_ADV_FAST_MIN_INTERVAL_UNITS = 160;
 constexpr uint16_t BLE_ADV_FAST_MAX_INTERVAL_UNITS = 320;
@@ -66,12 +70,7 @@ constexpr uint32_t BREATH_SENSING_WINDOW_MS = 10000;
 constexpr uint32_t RECOVERY_SENSING_WINDOW_MS = 15000; 
 constexpr uint32_t POLL_TICK_DELAY_MS = 20;
 
-constexpr float BREATH_MIN_SIGNIFICANT_DROP_PCT = 6.0f;    // 6.0% noise / mint floor
-constexpr float BREATH_FRESH_MAX_DROP_PCT       = 17.0f;   // 17.0% moderate drop threshold
-constexpr float BREATH_SIGNIFICANT_MAX_DROP_PCT = 45.0f;
-constexpr float DRY_MOUTH_MAX_DELTA_RH_PCT = 2.5f;
 constexpr float DRY_MOUTH_MIN_DELTA_CO2_PPM = 250.0f;
-constexpr float RECOVERY_LAG_MALODOR_THRESHOLD = 4.2f; 
 
 constexpr uint8_t BASELINE_TARGET_SAMPLE_COUNT = 3; 
 constexpr uint32_t BASELINE_CAPTURE_TIMEOUT_MS = 15000UL;
@@ -81,6 +80,10 @@ constexpr float PARTIAL_EXHALATION_MIN_DELTA_RH_PCT = 0.8f;
 constexpr float PARTIAL_EXHALATION_MIN_DELTA_CO2_PPM = 100.0f;
 constexpr float EXHALATION_MIN_MOISTURE_DELTA_RH_PCT = 20.0f;
 constexpr float EXHALATION_MIN_GAS_DROP_PCT          = 5.0f;
+
+constexpr float T50_CALCULATION_FACTOR = 0.5f;
+constexpr float HIGH_BASELINE_HUMIDITY_THRESHOLD_PCT = 80.0f;
+constexpr float MILLISECONDS_TO_SECONDS_CONVERSION = 1000.0f;
 
 constexpr const char *STATE_EXHALATION_TOO_WEAK = "EXHALATION_TOO_WEAK";
 constexpr const char *STATE_TRY_AGAIN_LATER = "TRY_AGAIN_LATER";
@@ -99,8 +102,14 @@ constexpr const char *RESULT_SOME_BEVERAGE_FOOD_ODOR = "SOME_BEVERAGE_FOOD_ODOR"
 constexpr const char *RESULT_NOTICEABLE_MALODOR = "NOTICEABLE_MALODOR";
 constexpr const char *RESULT_STRONG_MALODOR = "STRONG_MALODOR";
 
+constexpr const char *CMD_BREATH_SHORT = "3";
+constexpr const char *CMD_BREATH_CHAR = "b";
+constexpr const char *CMD_BREATH_FULL = "breath";
+constexpr const char *CMD_DIAG_SELECTIVITY = "test_selectivity";
+constexpr const char *CMD_DIAG_NUMERIC = "99";
+
 bool systemReady = false;
-enum OperationMode { MODE_IDLE, MODE_DRY_AIR_DETECTION, MODE_BREATH_TEST };
+enum OperationMode { MODE_IDLE, MODE_DRY_AIR_DETECTION, MODE_BREATH_TEST, MODE_DIAGNOSTIC };
 enum BsecProfile { PROFILE_OFF, PROFILE_ULP_300S, PROFILE_LP_3S };
 
 OperationMode currentMode = MODE_IDLE;
@@ -111,13 +120,15 @@ bool deviceConnected = false;
 bool bsecReady = false;
 volatile bool newGasDataAvailable = false;
 volatile bool pendingBreathCommand = false;
+volatile bool pendingDiagCommand = false;
 volatile bool pendingFlush = false;
 uint8_t bmeI2cAddr = BME68X_I2C_ADDR_HIGH;
 
 unsigned long lastOfflineWriteTime = 0;
 float accumTemp = 0.0f, accumHumidity = 0.0f, accumPressure = 0.0f, accumGasRes = 0.0f;
 int accumCount = 0;
-char pendingCmdBuf[32] = { 0 };
+constexpr size_t CMD_BUF_SIZE = 32;
+char pendingCmdBuf[CMD_BUF_SIZE] = { 0 };
 volatile bool hasPendingCommand = false;
 
 SensorData sensorData;
@@ -188,7 +199,6 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
   }
 }
 
-
 bool readLowLevelScanFrame(float &outGasRes, uint8_t &outStep) {
   if (bsecReady && bsec) bsec->run();
   if (newGasDataAvailable) {
@@ -211,7 +221,7 @@ bool readBsecFrame(float &outGasRes) {
 }
 
 bool prepareAndCaptureBaseline(float &outBaselineRes, float &outBaseHumidity, float &outBaseTemp, float &outBaseCO2) {
-  logMessage("[PREPARE BASELINE]: Capturing samples from BSEC LP Mode...");
+  logMessage("[PREPARE BASELINE]: Capturing baseline samples in BSEC LP Mode...");
   
   if (!updateBsecSubscription(BSEC_SAMPLE_RATE_LP)) {
     logMessage("[PREPARE BASELINE ERROR]: Failed to transition to LP Mode!");
@@ -232,23 +242,37 @@ bool prepareAndCaptureBaseline(float &outBaselineRes, float &outBaseHumidity, fl
         sumTemp += sensorData.currentTemp; 
         sumCO2 += sensorData.currentCO2;
         validCount++;
+        VERBOSE_LOG("[BASELINE SAMPLE #" + String(validCount) + "]: GasRes=" + String((long)rawRes) + 
+                    " Ohm | RH=" + String(sensorData.currentHumidity, 1) + 
+                    "% | Temp=" + String(sensorData.currentTemp, 1) + 
+                    "C | CO2=" + String((int)sensorData.currentCO2) + " ppm");
       }
     }
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
 
-  if (validCount == 0) return false;
+  if (validCount == 0) {
+    logMessage("[PREPARE BASELINE ERROR]: Zero valid samples collected during baseline window!");
+    return false;
+  }
 
   outBaselineRes = sumRes / validCount;
   outBaseHumidity = sumHumidity / validCount;
   outBaseTemp = sumTemp / validCount;
   outBaseCO2 = sumCO2 / validCount;
+
+  logMessage("[BASELINE CAPTURED]: R_base=" + String((long)outBaselineRes) + 
+              " Ohm | Base_RH=" + String(outBaseHumidity, 1) + 
+              "% | Base_Temp=" + String(outBaseTemp, 1) + 
+              "C | Base_CO2=" + String((int)outBaseCO2) + " ppm");
   return true;
 }
 
 bool waitForBreathExhalation(float baseGasRes, float baseHumidity, float baseTemp, float baseCO2,
                              float &outMinRes, float &outMaxDeltaRH, float &outMaxDeltaCO2) {
   dispatchData("{\"state\":\"" + String(STATE_READY_PLEASE_BLOW) + "\"}");
+  logMessage("[WAIT EXHALATION]: Waiting for breath exhalation blow (Timeout: " + String(BREATH_WAIT_TIMEOUT_MS / 1000) + "s)...");
+  
   uint32_t startMs = millis();
   outMaxDeltaRH = 0.0f; 
   outMaxDeltaCO2 = 0.0f;
@@ -266,19 +290,34 @@ bool waitForBreathExhalation(float baseGasRes, float baseHumidity, float baseTem
 
       dispatchData("{\"dH\":" + String(deltaHumidity, 1) + ",\"dCO2\":" + String(deltaCO2, 0) + ",\"gDrop\":" + String(gasDropPct, 1) + "}");
 
+      VERBOSE_LOG("[BLOW MONITOR]: GasRes=" + String((long)currentGasRes) + 
+                  " Ohm | gDrop=" + String(gasDropPct, 1) + 
+                  "% | dH=" + String(deltaHumidity, 1) + 
+                  "% | dCO2=" + String(deltaCO2, 0) + " ppm");
+
       bool isMoistSpike = (deltaHumidity >= EXHALATION_MIN_MOISTURE_DELTA_RH_PCT);
       bool isGasDrop = (gasDropPct >= EXHALATION_MIN_GAS_DROP_PCT);
-      if (baseHumidity >= 80.0f && isGasDrop) return true;
-      if (isMoistSpike && isGasDrop) return true;
+      
+      if (baseHumidity >= HIGH_BASELINE_HUMIDITY_THRESHOLD_PCT && isGasDrop) {
+        logMessage("[BLOW TRIGGERED]: High ambient humidity blow condition detected!");
+        return true;
+      }
+      if (isMoistSpike && isGasDrop) {
+        logMessage("[BLOW TRIGGERED]: Valid moisture spike and gas drop detected!");
+        return true;
+      }
     }
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
+  logMessage("[BLOW TIMEOUT]: Exhalation wait window expired without blow detection.");
   return false;
 }
 
 void captureBreathSensingWindow(float baseRes, float baseHumidity, float baseCO2,
                                 float &outMinRes, float &outMaxDeltaRH, float &outMaxDeltaCO2) {
   dispatchData("{\"state\":\"" + String(STATE_TESTING_SENSING_BREATH) + "\"}");
+  logMessage("[SENSING WINDOW]: Sampling breath kinetics window (" + String(BREATH_SENSING_WINDOW_MS / 1000) + "s)...");
+  
   uint32_t windowStartMs = millis();
   outMinRes = baseRes;
 
@@ -290,61 +329,54 @@ void captureBreathSensingWindow(float baseRes, float baseHumidity, float baseCO2
       if (currentGasRes > HW_MIN_SENSOR_GAS_RES && currentGasRes < outMinRes) outMinRes = currentGasRes;
       if (deltaRH > outMaxDeltaRH) outMaxDeltaRH = deltaRH;
       if (deltaCO2 > outMaxDeltaCO2) outMaxDeltaCO2 = deltaCO2;
+
+      VERBOSE_LOG("[SENSING FRAME]: Current R=" + String((long)currentGasRes) + 
+                  " Ohm | R_min=" + String((long)outMinRes) + 
+                  " Ohm | Peak dH=" + String(outMaxDeltaRH, 1) + "%");
     }
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
+  logMessage("[SENSING COMPLETE]: Final R_min=" + String((long)outMinRes) + " Ohm");
 }
 
 void captureRecoveryWindow(float minRes, float baseRes, float &outRecoveryLag) {
   dispatchData("{\"state\":\"RECOVERING_CALCULATING_T50\"}");
-  uint32_t startMs = millis();
-  float target50 = minRes + 0.5f * (baseRes - minRes);
-  outRecoveryLag = 10.0f; 
   
+  float target50 = minRes + T50_CALCULATION_FACTOR * (baseRes - minRes);
+  outRecoveryLag = SensorConstants::RECOVERY_LAG_TIMEOUT_SEC; 
+  
+  logMessage("[KINETICS T50 START]: R_base=" + String((long)baseRes) + 
+              " Ohm | R_min=" + String((long)minRes) + 
+              " Ohm | Target R_50%=" + String((long)target50) + " Ohm");
+  
+  uint32_t startMs = millis();
   while ((millis() - startMs) < RECOVERY_SENSING_WINDOW_MS) {
     float rGas = 0.0f;
     if (readBsecFrame(rGas)) {
+      VERBOSE_LOG("[T50 RECOVERY PURGE]: R_current=" + String((long)rGas) + 
+                  " Ohm | Target R_50%=" + String((long)target50) + " Ohm");
       if (rGas >= target50) {
-        outRecoveryLag = (millis() - startMs) / 1000.0f;
+        outRecoveryLag = (millis() - startMs) / MILLISECONDS_TO_SECONDS_CONVERSION;
+        logMessage("[T50 RECOVERY TARGET MET]: Reached 50% baseline recovery at " + String(outRecoveryLag, 2) + "s!");
         break;
       }
     }
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
-  logMessage("[KINETICS]: T50 Recovery Lag = " + String(outRecoveryLag) + "s");
+  if (outRecoveryLag >= SensorConstants::RECOVERY_LAG_TIMEOUT_SEC) {
+    logMessage("[T50 RECOVERY TIMEOUT]: Gas sensor failed to reach 50% recovery target within window. Defaulting lag to " + String(outRecoveryLag, 1) + "s.");
+  }
 }
 
 String evaluateBreathResult(float deltaDrop, float maxDeltaHumidity, float maxDeltaCO2, float recoveryLagSec) {
-  const bool isDryMouth = (maxDeltaHumidity < DRY_MOUTH_MAX_DELTA_RH_PCT) && 
-                          (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT || maxDeltaCO2 >= DRY_MOUTH_MIN_DELTA_CO2_PPM);
-  const bool validMoisture = (maxDeltaHumidity >= DRY_MOUTH_MAX_DELTA_RH_PCT);
-
-  const bool isSlowRecovery = (recoveryLagSec >= RECOVERY_LAG_MALODOR_THRESHOLD); // >= 4.2s
-  const bool isFastRecovery = (recoveryLagSec < RECOVERY_LAG_MALODOR_THRESHOLD);   // < 4.2s
-
-  const bool isNegligibleDrop   = (deltaDrop < BREATH_MIN_SIGNIFICANT_DROP_PCT);   // < 6.0%
-  const bool isSubThresholdDrop = (deltaDrop >= BREATH_MIN_SIGNIFICANT_DROP_PCT) && (deltaDrop < BREATH_FRESH_MAX_DROP_PCT); // 6.0% - 17.0%
-  const bool isSlightDrop       = (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT);        // >= 17.0%
-  const bool isModerateDrop     = (deltaDrop >= BREATH_FRESH_MAX_DROP_PCT) && (deltaDrop < BREATH_SIGNIFICANT_MAX_DROP_PCT); // 17.0% - 45.0%
-  const bool isSevereDrop       = (deltaDrop >= BREATH_SIGNIFICANT_MAX_DROP_PCT);   // >= 45.0%
-
-  // 1. Dry mouth conditions
-  if (isDryMouth && isFastRecovery) return RESULT_DRY_MOUTH_HYDRATE;
-  if (isDryMouth && isSlowRecovery) return RESULT_DRY_MOUTH_VSC_BUILDUP;
-
-  // 2. Negligible gas drop (< 6.0%) -> Physiological fresh breath (Menthol / mint friendly)
-  if (validMoisture && isNegligibleDrop) return RESULT_BALANCED_BREATH;
-
-  // 3. Sub-threshold drop (6.0% - 17.0%) conditions
-  if (validMoisture && isSubThresholdDrop && isFastRecovery) return RESULT_BALANCED_BREATH;
-  if (validMoisture && isSubThresholdDrop && isSlowRecovery) return RESULT_SETTLE_BEVERAGE_FOOD_ODOR;
-
-  // 4. Significant drop (>= 17.0%) conditions
-  if (validMoisture && isSlightDrop && isFastRecovery) return RESULT_SOME_BEVERAGE_FOOD_ODOR;
-  if (validMoisture && isModerateDrop && isSlowRecovery) return RESULT_NOTICEABLE_MALODOR;
-  if (validMoisture && isSevereDrop && isSlowRecovery) return RESULT_STRONG_MALODOR;
-
-  return RESULT_NONE;
+  BreathResult result = ::evaluateBreathResult(deltaDrop, maxDeltaHumidity, recoveryLagSec);
+  String resultStr = String(breathResultToString(result));
+  
+  logMessage("[EVALUATE KINETICS RESULT]: DeltaDrop=" + String(deltaDrop, 1) + 
+              "% | Max_dRH=" + String(maxDeltaHumidity, 1) + 
+              "% | T50_Lag=" + String(recoveryLagSec, 2) + 
+              "s => PTC Result: " + resultStr);
+  return resultStr;
 }
 
 void resetTestEvaluationData() {
@@ -385,6 +417,7 @@ void runBreathSequence() {
   float recoveryLag = 0.0f;
 
   if (!prepareAndCaptureBaseline(baseRes, baseHumidity, baseTemp, baseCO2)) {
+    logMessage("[SEQUENCE ABORTED]: Baseline capture failed!");
     updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
     currentProfile = PROFILE_LP_3S;
     return;
@@ -399,8 +432,10 @@ void runBreathSequence() {
     const bool isWeakExhalationDetected = (maxDeltaRH >= PARTIAL_EXHALATION_MIN_DELTA_RH_PCT);
 
     if (isWeakExhalationDetected) {
+      logMessage("[SEQUENCE RESULT]: Exhalation too weak detected.");
       dispatchData("{\"state\":\"" + String(STATE_EXHALATION_TOO_WEAK) + "\"}");
     } else {
+      logMessage("[SEQUENCE RESULT]: Exhalation wait timed out.");
       dispatchData("{\"state\":\"" + String(STATE_TIMEOUT) + "\"}");
     }
   }
@@ -408,6 +443,15 @@ void runBreathSequence() {
   updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
   currentProfile = PROFILE_LP_3S;
   currentMode = MODE_DRY_AIR_DETECTION;
+  logMessage("[SEQUENCE END]: Breath test complete. Restored BSEC LP mode.");
+}
+
+void executeDiagnosticSequence() {
+  logMessage("[DIAG START]: Command 99 processed. Triggering Selectivity Self-Test...");
+  currentMode = MODE_DIAGNOSTIC;
+  runSelectivityDiagnosticTest();
+  currentMode = MODE_IDLE;
+  logMessage("[DIAG COMPLETE]: Self-test sequence finished.");
 }
 
 uint8_t readBatteryPercentage() {
@@ -439,7 +483,7 @@ void saveOfflineData() {
     avgData.currentPressure = accumPressure / accumCount; 
     avgData.currentGasRes = accumGasRes / accumCount;
     
-    File file = LittleFS.open(OFFLINE_FILE, FILE_APPEND);
+    File file = LittleFS.open(OFFLINE_FILE_PATH, FILE_APPEND);
     if (file) { 
       file.println(avgData.toJsonString()); 
       file.close(); 
@@ -465,8 +509,8 @@ void dispatchData(String payload) {
 }
 
 void flushOfflineData() {
-  if (!LittleFS.exists(OFFLINE_FILE)) return;
-  File file = LittleFS.open(OFFLINE_FILE, FILE_READ);
+  if (!LittleFS.exists(OFFLINE_FILE_PATH)) return;
+  File file = LittleFS.open(OFFLINE_FILE_PATH, FILE_READ);
   if (!file) return;
   while (file.available() && deviceConnected) {
     String line = file.readStringUntil('\n'); 
@@ -479,7 +523,7 @@ void flushOfflineData() {
     }
   }
   file.close(); 
-  LittleFS.remove(OFFLINE_FILE);
+  LittleFS.remove(OFFLINE_FILE_PATH);
 }
 
 void softResetBme688Sensor() {
@@ -497,15 +541,16 @@ void resetToDefaultMode() {
 void handleCommand(String command) {
   command.trim(); 
   command.toLowerCase();
+  logMessage("[CMD RX]: Received command: '" + command + "'");
   dispatchData("{\"rx_cmd\":\"" + command + "\"}");
-  if (command == "3" || command == "b" || command == "breath") {
+  
+  if (command == CMD_BREATH_SHORT || command == CMD_BREATH_CHAR || command == CMD_BREATH_FULL) {
     if (!systemReady || !bsecReady || currentMode == MODE_BREATH_TEST) return;
     dryAirActive = false; 
     currentMode = MODE_BREATH_TEST; 
     pendingBreathCommand = true;
-  } else if (command == "test_selectivity" || command == "99") {
-    logMessage("[CMD RX]: Launching Selectivity Diagnostic Self-Test...");
-    runSelectivityDiagnosticTest();
+  } else if (command == CMD_DIAG_SELECTIVITY || command == CMD_DIAG_NUMERIC) {
+    pendingDiagCommand = true;
   }
 }
 
@@ -559,19 +604,50 @@ void adjustAdvertisingPower(bool newlyDisconnected) {
       pAdvertising->start();
       logMessage("[BLE ADV]: Transitioned to Ultra Low Power Advertising.");
     } else if (!pAdvertising->isAdvertising()) {
-      // Recovery guard: If advertising stopped unexpectedly while disconnected, restart it
       pAdvertising->start();
     }
+  }
+}
+
+void processSerialInput() {
+  static String serialBuffer = "";
+  static unsigned long lastCharTime = 0;
+
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    lastCharTime = millis();
+    if (c == '\n' || c == '\r') {
+      if (serialBuffer.length() > 0) {
+        handleCommand(serialBuffer);
+        serialBuffer = "";
+      }
+    } else {
+      serialBuffer += c;
+    }
+  }
+
+  // Auto-flush serial buffer if line-ending is missing in Serial Monitor
+  if (serialBuffer.length() > 0 && (millis() - lastCharTime >= SERIAL_AUTO_FLUSH_TIMEOUT_MS)) {
+    handleCommand(serialBuffer);
+    serialBuffer = "";
   }
 }
 
 void setup() {
   Serial.begin(SERIAL_BAUD_RATE); 
   delay(2000);
+  
+  logMessage("[SYS INIT]: Firmware Booting (Meso Nose Pure BSEC Kinetics)");
+  
   pinMode(BATTERY_ADC_PIN, INPUT); 
   analogReadResolution(BATTERY_ADC_RESOLUTION_BITS); 
   analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
-  LittleFS.begin(true, "/littlefs", 10, "spiffs");
+  
+  if (!LittleFS.begin(true, LITTLEFS_MOUNT_POINT, 10, "spiffs")) {
+    logMessage("[LITTLEFS WARN]: Mount failed. Formatting LittleFS partition...");
+    LittleFS.format();
+    LittleFS.begin(true, LITTLEFS_MOUNT_POINT, 10, "spiffs");
+  }
 
   NimBLEDevice::init(Device_Name.c_str());
   pServer = NimBLEDevice::createServer(); 
@@ -580,7 +656,13 @@ void setup() {
   pCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
   pCharacteristic->setCallbacks(new CharacteristicCallbacks());
   pService->start(); 
-  NimBLEDevice::getAdvertising()->start();
+  
+  NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
+  pAdvertising->setName(Device_Name.c_str());
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->start();
+
+  logMessage("[BLE ADV]: Active BLE Advertising Broadcast under name: " + Device_Name);
 
   Wire.begin(I2C_SDA, I2C_SCL); 
   Wire.setClock(I2C_CLOCK_SPEED_HZ); 
@@ -596,19 +678,25 @@ void setup() {
     currentProfile = PROFILE_LP_3S;
     updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
     bsec->attachCallback(newDataCallback);
+    logMessage("[BSEC INIT]: Engine Initialized & Subscription Active.");
+  } else {
+    logMessage("[BSEC ERROR]: BSEC Initialization Failed!");
   }
   systemReady = true;
+  logMessage("[SYS READY]: System Ready. Listening for BLE/Serial commands...");
 }
 
 void loop() {
   adjustAdvertisingPower(false);
 
-  if (Serial.available() > 0) handleCommand(Serial.readStringUntil('\n'));
+  processSerialInput();
+
   if (hasPendingCommand) { hasPendingCommand = false; handleCommand(String(pendingCmdBuf)); }
   if (pendingFlush && deviceConnected) { pendingFlush = false; flushOfflineData(); }
+  if (pendingDiagCommand) { pendingDiagCommand = false; executeDiagnosticSequence(); return; }
   if (pendingBreathCommand) { pendingBreathCommand = false; runBreathSequence(); return; }
 
-  if (bsecReady && bsec != nullptr && bsec->status >= BSEC_OK && currentProfile != PROFILE_OFF) {
+  if (bsecReady && bsec != nullptr && bsec->status >= BSEC_OK && currentProfile != PROFILE_OFF && currentMode == MODE_IDLE) {
     bsec->run();
     static unsigned long lastNotifyTime = 0;
     if ((millis() - lastNotifyTime) >= NOTIFY_ULP_INTERVAL_MS) {
