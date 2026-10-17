@@ -29,7 +29,7 @@ const uint8_t bsec_config_iaq[] = {
   } \
 } while(0)
 
-// Pin definitions - ESP32-C6 Dev Module
+// Hardware Pin Assignments
 #define BATTERY_ADC_PIN 2
 #define I2C_SDA 6
 #define I2C_SCL 7
