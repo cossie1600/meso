@@ -70,14 +70,11 @@ constexpr uint32_t BREATH_SENSING_WINDOW_MS = 10000;
 constexpr uint32_t RECOVERY_SENSING_WINDOW_MS = 15000; 
 constexpr uint32_t POLL_TICK_DELAY_MS = 20;
 
-constexpr float DRY_MOUTH_MIN_DELTA_CO2_PPM = 250.0f;
-
 constexpr uint8_t BASELINE_TARGET_SAMPLE_COUNT = 3; 
 constexpr uint32_t BASELINE_CAPTURE_TIMEOUT_MS = 15000UL;
 constexpr float HW_MIN_SENSOR_GAS_RES = 5000.0f;
 
 constexpr float PARTIAL_EXHALATION_MIN_DELTA_RH_PCT = 0.8f;
-constexpr float PARTIAL_EXHALATION_MIN_DELTA_CO2_PPM = 100.0f;
 constexpr float EXHALATION_MIN_MOISTURE_DELTA_RH_PCT = 20.0f;
 constexpr float EXHALATION_MIN_GAS_DROP_PCT          = 5.0f;
 
@@ -94,13 +91,6 @@ constexpr const char *STATUS_BREATH_TEST_STARTED = "BREATH_TEST_STARTED";
 constexpr const char *STATUS_BREATH_TEST_COMPLETE = "BREATH_TEST_COMPLETE";
 
 constexpr const char *RESULT_NONE = "NONE";
-constexpr const char *RESULT_DRY_MOUTH_HYDRATE = "DRY_MOUTH_HYDRATE";
-constexpr const char *RESULT_DRY_MOUTH_VSC_BUILDUP = "DRY_MOUTH_VSC_BUILDUP";
-constexpr const char *RESULT_SETTLE_BEVERAGE_FOOD_ODOR = "SETTLE_BEVERAGE_FOOD_ODOR";
-constexpr const char *RESULT_BALANCED_BREATH = "BALANCED_BREATH";
-constexpr const char *RESULT_SOME_BEVERAGE_FOOD_ODOR = "SOME_BEVERAGE_FOOD_ODOR";
-constexpr const char *RESULT_NOTICEABLE_MALODOR = "NOTICEABLE_MALODOR";
-constexpr const char *RESULT_STRONG_MALODOR = "STRONG_MALODOR";
 
 constexpr const char *CMD_BREATH_SHORT = "3";
 constexpr const char *CMD_BREATH_CHAR = "b";
@@ -192,9 +182,6 @@ void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bse
       case BSEC_OUTPUT_RAW_PRESSURE:
         sensorData.currentPressure = output.signal / 100.0f; // Pa to hPa
         break;
-      case BSEC_OUTPUT_CO2_EQUIVALENT:
-        sensorData.currentCO2 = output.signal;
-        break;
     }
   }
 }
@@ -220,7 +207,7 @@ bool readBsecFrame(float &outGasRes) {
   return false;
 }
 
-bool prepareAndCaptureBaseline(float &outBaselineRes, float &outBaseHumidity, float &outBaseTemp, float &outBaseCO2) {
+bool prepareAndCaptureBaseline(float &outBaselineRes, float &outBaseHumidity, float &outBaseTemp) {
   logMessage("[PREPARE BASELINE]: Capturing baseline samples in BSEC LP Mode...");
   
   if (!updateBsecSubscription(BSEC_SAMPLE_RATE_LP)) {
@@ -229,7 +216,7 @@ bool prepareAndCaptureBaseline(float &outBaselineRes, float &outBaseHumidity, fl
   }
   currentProfile = PROFILE_LP_3S;
   
-  float sumRes = 0.0f, sumHumidity = 0.0f, sumTemp = 0.0f, sumCO2 = 0.0f;
+  float sumRes = 0.0f, sumHumidity = 0.0f, sumTemp = 0.0f;
   uint8_t validCount = 0;
   uint32_t startMs = millis();
 
@@ -240,12 +227,10 @@ bool prepareAndCaptureBaseline(float &outBaselineRes, float &outBaseHumidity, fl
         sumRes += rawRes; 
         sumHumidity += sensorData.currentHumidity;
         sumTemp += sensorData.currentTemp; 
-        sumCO2 += sensorData.currentCO2;
         validCount++;
         VERBOSE_LOG("[BASELINE SAMPLE #" + String(validCount) + "]: GasRes=" + String((long)rawRes) + 
                     " Ohm | RH=" + String(sensorData.currentHumidity, 1) + 
-                    "% | Temp=" + String(sensorData.currentTemp, 1) + 
-                    "C | CO2=" + String((int)sensorData.currentCO2) + " ppm");
+                    "% | Temp=" + String(sensorData.currentTemp, 1) + "C");
       }
     }
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
@@ -259,41 +244,35 @@ bool prepareAndCaptureBaseline(float &outBaselineRes, float &outBaseHumidity, fl
   outBaselineRes = sumRes / validCount;
   outBaseHumidity = sumHumidity / validCount;
   outBaseTemp = sumTemp / validCount;
-  outBaseCO2 = sumCO2 / validCount;
 
   logMessage("[BASELINE CAPTURED]: R_base=" + String((long)outBaselineRes) + 
               " Ohm | Base_RH=" + String(outBaseHumidity, 1) + 
-              "% | Base_Temp=" + String(outBaseTemp, 1) + 
-              "C | Base_CO2=" + String((int)outBaseCO2) + " ppm");
+              "% | Base_Temp=" + String(outBaseTemp, 1) + "C");
   return true;
 }
 
-bool waitForBreathExhalation(float baseGasRes, float baseHumidity, float baseTemp, float baseCO2,
-                             float &outMinRes, float &outMaxDeltaRH, float &outMaxDeltaCO2) {
+bool waitForBreathExhalation(float baseGasRes, float baseHumidity, float baseTemp,
+                             float &outMinRes, float &outMaxDeltaRH) {
   dispatchData("{\"state\":\"" + String(STATE_READY_PLEASE_BLOW) + "\"}");
   logMessage("[WAIT EXHALATION]: Waiting for breath exhalation blow (Timeout: " + String(BREATH_WAIT_TIMEOUT_MS / 1000) + "s)...");
   
   uint32_t startMs = millis();
   outMaxDeltaRH = 0.0f; 
-  outMaxDeltaCO2 = 0.0f;
 
   while ((millis() - startMs) < BREATH_WAIT_TIMEOUT_MS) {
     float currentGasRes = 0.0f;
     if (readBsecFrame(currentGasRes)) {
       float deltaHumidity = sensorData.currentHumidity - baseHumidity;
-      float deltaCO2      = sensorData.currentCO2 - baseCO2;
       float gasDropPct    = (baseGasRes > 0.0f) ? (((baseGasRes - currentGasRes) / baseGasRes) * 100.0f) : 0.0f;
 
       if (currentGasRes < outMinRes) outMinRes = currentGasRes;
       if (deltaHumidity > outMaxDeltaRH) outMaxDeltaRH = deltaHumidity;
-      if (deltaCO2 > outMaxDeltaCO2) outMaxDeltaCO2 = deltaCO2;
 
-      dispatchData("{\"dH\":" + String(deltaHumidity, 1) + ",\"dCO2\":" + String(deltaCO2, 0) + ",\"gDrop\":" + String(gasDropPct, 1) + "}");
+      dispatchData("{\"dH\":" + String(deltaHumidity, 1) + ",\"gDrop\":" + String(gasDropPct, 1) + "}");
 
       VERBOSE_LOG("[BLOW MONITOR]: GasRes=" + String((long)currentGasRes) + 
                   " Ohm | gDrop=" + String(gasDropPct, 1) + 
-                  "% | dH=" + String(deltaHumidity, 1) + 
-                  "% | dCO2=" + String(deltaCO2, 0) + " ppm");
+                  "% | dH=" + String(deltaHumidity, 1) + "%");
 
       bool isMoistSpike = (deltaHumidity >= EXHALATION_MIN_MOISTURE_DELTA_RH_PCT);
       bool isGasDrop = (gasDropPct >= EXHALATION_MIN_GAS_DROP_PCT);
@@ -313,8 +292,8 @@ bool waitForBreathExhalation(float baseGasRes, float baseHumidity, float baseTem
   return false;
 }
 
-void captureBreathSensingWindow(float baseRes, float baseHumidity, float baseCO2,
-                                float &outMinRes, float &outMaxDeltaRH, float &outMaxDeltaCO2) {
+void captureBreathSensingWindow(float baseRes, float baseHumidity,
+                                float &outMinRes, float &outMaxDeltaRH) {
   dispatchData("{\"state\":\"" + String(STATE_TESTING_SENSING_BREATH) + "\"}");
   logMessage("[SENSING WINDOW]: Sampling breath kinetics window (" + String(BREATH_SENSING_WINDOW_MS / 1000) + "s)...");
   
@@ -325,10 +304,8 @@ void captureBreathSensingWindow(float baseRes, float baseHumidity, float baseCO2
     float currentGasRes = 0.0f;
     if (readBsecFrame(currentGasRes)) {
       float deltaRH = sensorData.currentHumidity - baseHumidity;
-      float deltaCO2 = sensorData.currentCO2 - baseCO2;
       if (currentGasRes > HW_MIN_SENSOR_GAS_RES && currentGasRes < outMinRes) outMinRes = currentGasRes;
       if (deltaRH > outMaxDeltaRH) outMaxDeltaRH = deltaRH;
-      if (deltaCO2 > outMaxDeltaCO2) outMaxDeltaCO2 = deltaCO2;
 
       VERBOSE_LOG("[SENSING FRAME]: Current R=" + String((long)currentGasRes) + 
                   " Ohm | R_min=" + String((long)outMinRes) + 
@@ -368,8 +345,8 @@ void captureRecoveryWindow(float minRes, float baseRes, float &outRecoveryLag) {
   }
 }
 
-String evaluateBreathResult(float deltaDrop, float maxDeltaHumidity, float maxDeltaCO2, float recoveryLagSec) {
-  BreathResult result = ::evaluateBreathResult(deltaDrop, maxDeltaHumidity, recoveryLagSec);
+String evaluateBreathResultWrapper(float deltaDrop, float maxDeltaHumidity, float recoveryLagSec) {
+  BreathResult result = evaluateBreathResult(deltaDrop, maxDeltaHumidity, recoveryLagSec);
   String resultStr = String(breathResultToString(result));
   
   logMessage("[EVALUATE KINETICS RESULT]: DeltaDrop=" + String(deltaDrop, 1) + 
@@ -386,7 +363,7 @@ void resetTestEvaluationData() {
   sensorData.ptcResult = RESULT_NONE;
 }
 
-void processBreathTestResults(float baseRes, float minRes, float maxDeltaHumidity, float maxDeltaCO2, float recoveryLag) {
+void processBreathTestResults(float baseRes, float minRes, float maxDeltaHumidity, float recoveryLag) {
   float deltaDrop = (baseRes > 0.0f) ? (((baseRes - minRes) / baseRes) * 100.0f) : 0.0f;
   if (deltaDrop < 0.0f) deltaDrop = 0.0f;
 
@@ -394,7 +371,7 @@ void processBreathTestResults(float baseRes, float minRes, float maxDeltaHumidit
   sensorData.deltaDrop = deltaDrop;
   sensorData.rBreathMin = (long)minRes;
   sensorData.recoveryLagSec = recoveryLag;
-  sensorData.ptcResult = evaluateBreathResult(deltaDrop, maxDeltaHumidity, maxDeltaCO2, recoveryLag);
+  sensorData.ptcResult = evaluateBreathResultWrapper(deltaDrop, maxDeltaHumidity, recoveryLag);
 
   dispatchData("{\"status\":\"" + String(STATUS_BREATH_TEST_COMPLETE) + "\"}");
   dispatchData(sensorData.toJsonString());
@@ -406,17 +383,16 @@ void runBreathSequence() {
 
   resetTestEvaluationData();
 
-  float ambientCO2 = sensorData.currentCO2;
   float ambientTemp = sensorData.currentTemp;
   float ambientRH = sensorData.currentHumidity;
   dryAirActive = false; 
   currentMode = MODE_BREATH_TEST;
 
-  float baseRes = 0.0f, baseHumidity = ambientRH, baseTemp = ambientTemp, baseCO2 = ambientCO2;
-  float maxDeltaRH = 0.0f, maxDeltaCO2 = 0.0f;
+  float baseRes = 0.0f, baseHumidity = ambientRH, baseTemp = ambientTemp;
+  float maxDeltaRH = 0.0f;
   float recoveryLag = 0.0f;
 
-  if (!prepareAndCaptureBaseline(baseRes, baseHumidity, baseTemp, baseCO2)) {
+  if (!prepareAndCaptureBaseline(baseRes, baseHumidity, baseTemp)) {
     logMessage("[SEQUENCE ABORTED]: Baseline capture failed!");
     updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
     currentProfile = PROFILE_LP_3S;
@@ -424,10 +400,10 @@ void runBreathSequence() {
   }
 
   float minRes = baseRes;
-  if (waitForBreathExhalation(baseRes, baseHumidity, baseTemp, baseCO2, minRes, maxDeltaRH, maxDeltaCO2)) {
-    captureBreathSensingWindow(baseRes, baseHumidity, baseCO2, minRes, maxDeltaRH, maxDeltaCO2);
+  if (waitForBreathExhalation(baseRes, baseHumidity, baseTemp, minRes, maxDeltaRH)) {
+    captureBreathSensingWindow(baseRes, baseHumidity, minRes, maxDeltaRH);
     captureRecoveryWindow(minRes, baseRes, recoveryLag);
-    processBreathTestResults(baseRes, minRes, maxDeltaRH, maxDeltaCO2, recoveryLag);
+    processBreathTestResults(baseRes, minRes, maxDeltaRH, recoveryLag);
   } else {
     const bool isWeakExhalationDetected = (maxDeltaRH >= PARTIAL_EXHALATION_MIN_DELTA_RH_PCT);
 
@@ -626,7 +602,6 @@ void processSerialInput() {
     }
   }
 
-  // Auto-flush serial buffer if line-ending is missing in Serial Monitor
   if (serialBuffer.length() > 0 && (millis() - lastCharTime >= SERIAL_AUTO_FLUSH_TIMEOUT_MS)) {
     handleCommand(serialBuffer);
     serialBuffer = "";
