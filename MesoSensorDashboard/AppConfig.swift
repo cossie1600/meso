@@ -78,7 +78,7 @@ struct AppConfig {
     static let breathWaitTimeout: TimeInterval = 12.0
 
     /// Pre-heat duration (in seconds) required to stabilize the BME688 MOX heater plate.
-    static let preheatDuration: TimeInterval = 12.0
+    static let preheatDuration: TimeInterval = 32.0
 
     /// Duration (in seconds) of active sampling purge after test completion/timeout.
     static let postTestPurgeDuration: TimeInterval = 60.0

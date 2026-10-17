@@ -9,7 +9,7 @@ import SwiftUI
 
 struct BatteryNote: View {
     var body: some View {
-        Text("Note: Sensor cycles every 25 seconds to preserve battery.")
+        Text("Note: Pendant cycles every 25 seconds to preserve battery.")
             .font(.footnote)
             .foregroundColor(.gray)
             .multilineTextAlignment(.center)

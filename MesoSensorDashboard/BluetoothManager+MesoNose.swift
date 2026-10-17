@@ -17,6 +17,8 @@ struct MesoNoseConstants {
     static let secondsPerMinute: Int = 60
     // Transient cold-boot heating floor (near-zero short circuits < 1000 ohms)
     static let transientWarmupVocFloor: Int = 1_000
+    // Blow guard timeout: 30s firmware wait + 2s BLE notification transport buffer
+    static let blowWindowTimeoutSeconds: TimeInterval = 32.0
 }
 
 struct MesoNosePayloadKeys {
@@ -26,17 +28,23 @@ struct MesoNosePayloadKeys {
     static let rh = "rh"
     static let press = "press"
     static let voc = "voc"
+    static let co2 = "co2"
     static let ptcResult = "ptc_result"
     static let rxCmd = "rx_cmd"
     static let dH = "dH"
     static let gDrop = "gDrop"
+    static let breathDropDelta = "breath_drop_delta"
+    static let selectivityRatio = "selectivity_ratio"
+    static let recoveryLagSec = "recovery_lag_sec"
+    static let breathMin = "breath_min"
     static let seconds = "seconds"
     static let remainingSec = "remaining_sec"
     static let battery = "battery"
 
     static let allValidKeys: Set<String> = [
-        temp, rh, press, voc, ptcResult, status,
-        state, rxCmd, dH, gDrop, seconds, remainingSec, battery,
+        temp, rh, press, voc, co2, ptcResult, status,
+        state, rxCmd, dH, gDrop, breathDropDelta, selectivityRatio,
+        recoveryLagSec, breathMin, seconds, remainingSec, battery,
     ]
 }
 
@@ -59,28 +67,33 @@ enum MesoNoseFirmwareState: String {
     case profileLP = "PROFILE_LP"
 }
 
+/// Exact parity with C++ BreathResult enum in breath_kinetics_engine.h / .cpp
 enum MesoNoseResult: String, CaseIterable, Sendable {
     case none = "NONE"
+    case invalidExhalation = "INVALID_EXHALATION"
     case dryMouthHydrate = "DRY_MOUTH_HYDRATE"
     case dryMouthVscBuildup = "DRY_MOUTH_VSC_BUILDUP"
-    case settleBeverageFoodOdor = "SETTLE_BEVERAGE_FOOD_ODOR"
     case balancedBreath = "BALANCED_BREATH"
+    case settleBreath = "SETTLE_BREATH"
+    case settleBeverageFoodOdor = "SETTLE_BEVERAGE_FOOD_ODOR"
     case someBeverageFoodOdor = "SOME_BEVERAGE_FOOD_ODOR"
     case noticeableMalodor = "NOTICEABLE_MALODOR"
     case strongMalodor = "STRONG_MALODOR"
 
     var title: String {
         switch self {
-        case .none:
+        case .none, .invalidExhalation:
             return MesoNoseUIStrings.ResultTitles.none
         case .dryMouthHydrate:
             return MesoNoseUIStrings.ResultTitles.dryMouthHydrate
         case .dryMouthVscBuildup:
             return MesoNoseUIStrings.ResultTitles.dryMouthVscBuildup
+        case .settleBreath:
+            return MesoNoseUIStrings.ResultTitles.settleBreath
         case .settleBeverageFoodOdor:
             return MesoNoseUIStrings.ResultTitles.settleBeverageFoodOdor
         case .balancedBreath:
-            return MesoNoseUIStrings.ResultTitles.balancedBreath
+            return MesoNoseUIStrings.ResultTitles.freshBalancedBreath
         case .someBeverageFoodOdor:
             return MesoNoseUIStrings.ResultTitles.someBeverageFoodOdor
         case .noticeableMalodor:
@@ -92,16 +105,18 @@ enum MesoNoseResult: String, CaseIterable, Sendable {
 
     var description: String {
         switch self {
-        case .none:
+        case .none, .invalidExhalation:
             return MesoNoseUIStrings.ResultDescriptions.none
         case .dryMouthHydrate:
             return MesoNoseUIStrings.ResultDescriptions.dryMouthHydrate
         case .dryMouthVscBuildup:
             return MesoNoseUIStrings.ResultDescriptions.dryMouthVscBuildup
+        case .settleBreath:
+            return MesoNoseUIStrings.ResultDescriptions.settleBreath
         case .settleBeverageFoodOdor:
             return MesoNoseUIStrings.ResultDescriptions.settleBeverageFoodOdor
         case .balancedBreath:
-            return MesoNoseUIStrings.ResultDescriptions.balancedBreath
+            return MesoNoseUIStrings.ResultDescriptions.freshBalancedBreath
         case .someBeverageFoodOdor:
             return MesoNoseUIStrings.ResultDescriptions.someBeverageFoodOdor
         case .noticeableMalodor:
@@ -113,7 +128,7 @@ enum MesoNoseResult: String, CaseIterable, Sendable {
 
     var themeColor: Color {
         switch self {
-        case .balancedBreath:
+        case .balancedBreath, .settleBreath:
             return .green
         case .someBeverageFoodOdor, .settleBeverageFoodOdor, .dryMouthHydrate:
             return .blue
@@ -121,70 +136,82 @@ enum MesoNoseResult: String, CaseIterable, Sendable {
             return .orange
         case .strongMalodor:
             return .purple
-        case .none:
+        case .none, .invalidExhalation:
             return .gray
         }
     }
 }
 
 struct MesoNoseUIStrings {
-    static let deviceUnpaired = "Device Unpaired"
-    static let searchingNearby = "Searching for nearby Meso Nose..."
+    static let deviceUnpaired = "Pendant Unpaired"
+    static let searchingNearby = "Searching for nearby pendant..."
     static let warmingUpBlocked = "Warming Up... Please wait before blowing."
-    static let wakingAndPreheating = "Waking sensor & pre-heating..."
-    static let heatingSensorPlate = "Heating sensor plate..."
-    static let breathTestInitiated = "Breath Test Initiated"
-    static let analysisComplete = "Analysis Complete"
-    static let blowNow = "BLOW NOW"
-    static let analyzingBreath = "Analyzing breath sample..."
-    static let calculatingT50 = "Calculating Desorption Recovery (T50)..."
-    static let exhalationTooWeak = "Exhalation Too Weak. Please blow harder!"
-    static let tryAgainLater = "Sensor Busy / Warming Up. Try again shortly."
-    static let noBreathDetected = "No Breath Detected"
-    static let testCancelled = "Test Cancelled"
-    static let connectedReady = "Connected (Ready)"
-    static let sensorWarmingUpColdBoot = "Sensor Warming Up (Cold Boot)..."
+    static let wakingAndPreheating = "Waking up... Please wait..."
+    static let heatingSensorPlate = "Waking up the pendant..."
+    static let breathTestInitiated = "Breath Odor Test Initiated"
+    static let analysisComplete = "Breath Odor Analysis Completed"
+    static let blowNow = "Blow at the bottom of the pendant now as if you are blowing out birthday candles."
+    static let analyzingBreath = "Good Job! Breath is captured."
+    static let calculatingT50 = "Analyzing the sample..."
+    static let exhalationTooWeak = "Please try blow at the bottom of the pendant a little harder. No breath was captured."
+    static let tryAgainLater = "The pendant needs a little time, please try again shortly."
+    static let noBreathDetected = "No Breath is detected."
+    static let testCancelled = "Action Cancelled."
+    static let connectedReady = "Pendant is Ready."
+    static let sensorWarmingUpColdBoot = "Waking up the pendent and warming it up..."
 
-    static let statusSensorStabilizing = "Sensor Stabilizing..."
-    static let statusSensorDisconnected = "Sensor Disconnected"
+    static let statusSensorStabilizing = "Pendant Stabilizing..."
+    static let statusSensorDisconnected = "Pendant Disconnected"
     static let promptConnectSensor =
-        "Please make sure your Meso Nose sensor is powered on and paired in Settings."
+        "Please make sure your Pendant is charged and paired in Settings."
+    // need to remove when remove Breath Overlay View
     static let promptSensorStabilizing =
         "Test trigger unlocks automatically once ready."
     static let actionSearchAndConnect = "Search & Connect"
 
     static func warmingUpFormatted(mins: Int, secs: Int) -> String {
-        return String(format: "Sensor Warming Up (%dm %02ds)...", mins, secs)
+        return String(format: "Pendant Warming Up (%dm %02ds)...", mins, secs)
     }
 
     struct ResultTitles {
-        static let none = "Neutral Reading"
-        static let dryMouthHydrate = "Hydration Boost Needed"
-        static let dryMouthVscBuildup = "Low Moisture & Natural Shift"
-        static let settleBeverageFoodOdor = "Settling Flavor Notes"
-        static let balancedBreath = "Fresh & Balanced Breath"
-        static let someBeverageFoodOdor = "Food & Drink Aftertaste"
-        static let noticeableMalodor = "Freshness Boost Recommended"
-        static let strongMalodor = "Oral Hydration & Care Alert"
+        static let none = "No Reading Detected"
+        static let dryMouthHydrate = "A Little Hydration Could Help"
+        static let dryMouthVscBuildup = "A Bit Dry Right Now"
+        static let freshBalancedBreath = "Fresh & Balanced Breath"
+        static let settleBreath = "Delicate Flavor Notes"
+        static let settleBeverageFoodOdor = "Settling Food Scents"
+        static let someBeverageFoodOdor = "Lingering Food & Drink Scents"
+        static let noticeableMalodor = "Time for a Quick Refresh"
+        static let strongMalodor = "A Little Extra Care May Help"
     }
 
     struct ResultDescriptions {
         static let none =
-            "Sample wasn't quite strong enough. Try taking a deep breath and blowing steadily."
+            "We couldn't quite catch a breath sample. Taking a slow, deep breath and blowing steadily may help us get a clear reading."
+        
         static let dryMouthHydrate =
-            "Breath humidity is a bit low. A glass of water will help refresh your mouth and restore balance."
+            "Your mouth may feel a little dry right now. Enjoying a glass of water could be a wonderful way to refresh and hydrate."
+        
         static let dryMouthVscBuildup =
-            "Natural dryness can temporarily affect freshness. Hydrating and rinsing will clear natural buildup."
+            "A gentle touch of dryness can sometimes affect breath freshness. Sipping water or taking a quick rinse could help restore your natural balance."
+        
+        static let freshBalancedBreath =
+            "Your breath feels clean, fresh, and perfectly balanced! You're good to go."
+        
+        static let settleBreath =
+            "There may just be a delicate hint of recent food or drink on your breath—it's very subtle and nothing to worry about at all."
+        
         static let settleBeverageFoodOdor =
-            "Residual notes from recent food or drinks are settling and should clear naturally soon."
-        static let balancedBreath =
-            "Your breath profile is clean, light, and well-balanced!"
+            "A few gentle notes from recent food or drinks may still be lingering. A soft rinse or quick brush could help clear them away comfortably."
+        
         static let someBeverageFoodOdor =
-            "Noticeable flavor notes from recent meals or beverages detected. A quick water rinse helps reset."
+            "You may notice some lingering flavors from recent food or drinks. A gentle brush or quick rinse could be a great way to refresh your breath."
+        
         static let noticeableMalodor =
-            "A slight shift in breath freshness detected. Rinsing or brushing will quickly restore your baseline."
+            "Your breath could benefit from a quick refresh right now. A gentle brush, floss, or rinse may help bring back your natural balance."
+        
         static let strongMalodor =
-            "A distinct shift in breath notes detected. Hydrate, brush, or use mouthwash to reset your balance."
+            "Your breath may need a little extra care today. Brushing, flossing, or using mouthwash right away could help you feel your best. If this continues for a few days despite your usual hygiene routine, you might also consider speaking with a dental care provider for extra guidance."
     }
 }
 
@@ -205,7 +232,7 @@ struct MesoNoseLogMessages {
     static let pairingModeActive =
         "Pairing Mode active: Searching for closest Meso Nose..."
     static let warmupBlocked =
-        "Breath test blocked: Sensor is currently in 5-minute cold boot warmup."
+        "Breath test blocked: Pendant is currently in 5-minute cold boot warmup."
     static let preheatComplete =
         "Pre-heat complete. Triggering Breath Test command..."
     static let testStarted = "Ingestion: Firmware reported BREATH_TEST_STARTED."
@@ -387,17 +414,16 @@ extension BluetoothManager {
                 execute: workItem
             )
         }
-    }   
+    }
 
     func processFirmwareStateTransition(_ stateString: String) {
         AppLogger.writeLog("[TRACE]: Detected Firmware State Transition -> \(stateString)")
 
         switch stateString {
-        case "READY_PLEASE_BLOW":
+        case MesoNoseFirmwareState.readyPleaseBlow.rawValue:
             transitionToBlowNow()
 
-        case "TESTING_SENSING_BREATH":
-            // Reject late sequence transition if local test is no longer active
+        case MesoNoseFirmwareState.testingSensingBreath.rawValue:
             guard breathTestState == .blowNow || breathTestState == .warmingUp else {
                 AppLogger.writeLog("[TRACE]: Ignored TESTING_SENSING_BREATH because local test is no longer active (\(breathTestState)).")
                 return
@@ -405,14 +431,14 @@ extension BluetoothManager {
             self.blowTimeoutTimer?.invalidate()
             self.breathTestState = .processing
 
-        case "RECOVERING_CALCULATING_T50":
+        case MesoNoseFirmwareState.recoveringCalculatingT50.rawValue:
             guard breathTestState == .processing else {
                 AppLogger.writeLog("[TRACE]: Ignored RECOVERING_CALCULATING_T50 because state is \(breathTestState).")
                 return
             }
             self.breathTestState = .processing
 
-        case "TIMEOUT", "EXHALATION_TOO_WEAK":
+        case MesoNoseFirmwareState.timeout.rawValue, MesoNoseFirmwareState.exhalationTooWeak.rawValue:
             handleBreathTestCompletion(didSucceed: false, failureReason: stateString)
 
         default:
@@ -501,19 +527,19 @@ extension BluetoothManager {
                 case .exhalationTooWeak:
                     AppLogger.writeLog(MesoNoseLogMessages.exhalationTooWeak)
                     self.statusText = MesoNoseUIStrings.exhalationTooWeak
-                    self.handleBreathTestCompletion(didSucceed: false)
+                    self.handleBreathTestCompletion(didSucceed: false, failureReason: state.rawValue)
                     return
 
                 case .tryAgainLater:
                     AppLogger.writeLog(MesoNoseLogMessages.tryAgainLater)
                     self.statusText = MesoNoseUIStrings.tryAgainLater
-                    self.handleBreathTestCompletion(didSucceed: false)
+                    self.handleBreathTestCompletion(didSucceed: false, failureReason: state.rawValue)
                     return
 
                 case .timeout:
                     AppLogger.writeLog(MesoNoseLogMessages.timeout)
                     self.statusText = MesoNoseUIStrings.noBreathDetected
-                    self.handleBreathTestCompletion(didSucceed: false)
+                    self.handleBreathTestCompletion(didSucceed: false, failureReason: state.rawValue)
                     return
 
                 case .profileULP:
@@ -587,7 +613,7 @@ extension BluetoothManager {
         AppLogger.writeLog(MesoNoseLogMessages.blowTimeoutStarted)
 
         self.blowTimeoutTimer = Timer.scheduledTimer(
-            withTimeInterval: AppConfig.breathWaitTimeout,
+            withTimeInterval: MesoNoseConstants.blowWindowTimeoutSeconds,
             repeats: false
         ) { [weak self] _ in
             DispatchQueue.main.async {
@@ -596,7 +622,7 @@ extension BluetoothManager {
                 if self.breathTestState == .blowNow || self.breathTestState == .processing {
                     AppLogger.writeLog(MesoNoseLogMessages.blowWindowTimedOut)
                     self.statusText = MesoNoseUIStrings.noBreathDetected
-                    self.handleBreathTestCompletion(didSucceed: false)
+                    self.handleBreathTestCompletion(didSucceed: false, failureReason: MesoNoseFirmwareState.timeout.rawValue)
                 }
             }
         }

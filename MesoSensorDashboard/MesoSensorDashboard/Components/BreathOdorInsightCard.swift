@@ -13,12 +13,6 @@ struct BreathOdorInsightCard: View {
         static let startButtonText = "Start"
         static let cancelButtonText = "Cancel"
 
-        static let warmingUpGuidance = "Warming up sensor... Please wait"
-        static let blowNowGuidance = "Blow now! Exhale steadily into sensor"
-        static let analyzingGuidance = "Analyzing breath sample kinetics..."
-        static let completedGuidance = "Test completed! New insight added below"
-        static let timeoutGuidance = "Breath evaluation timed out. Tap Start to retry."
-
         static let titleFontSize: CGFloat = 18.0
         static let buttonFontSize: CGFloat = 15.0
         static let statusFontSize: CGFloat = 14.0
@@ -30,16 +24,18 @@ struct BreathOdorInsightCard: View {
     /// Derives active guidance text to render below action buttons matching BreathTestState
     private var activeGuidanceText: String? {
         switch bleManager.breathTestState {
-        case .coldBootWarmup, .warmingUp:
-            return UIConstants.warmingUpGuidance
+        case .coldBootWarmup:
+            return MesoNoseUIStrings.wakingAndPreheating
+        case .warmingUp:
+            return MesoNoseUIStrings.warmingUpBlocked
         case .blowNow:
-            return UIConstants.blowNowGuidance
+            return MesoNoseUIStrings.blowNow
         case .processing:
-            return UIConstants.analyzingGuidance
+            return MesoNoseUIStrings.analyzingBreath
         case .completed:
-            return UIConstants.completedGuidance
+            return MesoNoseUIStrings.analysisComplete
         case .timeout:
-            return UIConstants.timeoutGuidance
+            return MesoNoseUIStrings.noBreathDetected
         case .idle:
             return nil
         }
