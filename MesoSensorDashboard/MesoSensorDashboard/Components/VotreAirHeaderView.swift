@@ -14,12 +14,14 @@ struct VotreAirHeaderView: View {
     private struct UIConstants {
         static let titleText = "Votre Air"
         static let separatorText = "•"
-        
+
         static let titleFontSize: CGFloat = 26.0
         static let telemetryFontSize: CGFloat = 11.0
-        static let emblemSize: CGFloat = 28.0
         
-        static let headerVStackSpacing: CGFloat = 2.0
+        static let emblemSize: CGFloat = 35.0
+
+        static let headerVStackSpacing: CGFloat = 6.0
+        static let titleHStackSpacing: CGFloat = 8.0
         static let telemetryHStackSpacing: CGFloat = 5.0
         static let minimumScaleFactorRatio: CGFloat = 0.80
         static let singleLineLimit: Int = 1
@@ -30,39 +32,65 @@ struct VotreAirHeaderView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: UIConstants.headerVStackSpacing) {
-                // Primary Dashboard Title
+        VStack(alignment: .leading, spacing: UIConstants.headerVStackSpacing) {
+            // Title Row: [Icon] + [Votre Air] + [Spacer] + [Settings Icon]
+            HStack(alignment: .center, spacing: UIConstants.titleHStackSpacing) {
+                // Alchemist A Emblem on Left Side of Title
+                Image("alchemistA")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(
+                        width: UIConstants.emblemSize,
+                        height: UIConstants.emblemSize
+                    )
+
                 Text(UIConstants.titleText)
-                    .font(.system(size: UIConstants.titleFontSize, weight: .bold, design: .rounded))
+                    .font(
+                        .system(
+                            size: UIConstants.titleFontSize,
+                            weight: .bold,
+                            design: .rounded
+                        )
+                    )
                     .foregroundColor(Color.appPrimaryText)
 
-                // Scaled Single-Line Telemetry Sub-Header Row: Temp • RH • Battery
-                HStack(spacing: UIConstants.telemetryHStackSpacing) {
-                    Label(temperatureText, systemImage: "thermometer.medium")
-                    
-                    Text(UIConstants.separatorText)
-                        .foregroundColor(Color.appSecondaryText)
-                    
-                    Label(humidityText, systemImage: "humidity")
-                    
-                    Text(UIConstants.separatorText)
-                        .foregroundColor(Color.appSecondaryText)
-                    
-                    Label(UIConstants.formattedBatteryText(batteryLevel), systemImage: batteryIconName)
+                Spacer()
+
+                // Top-Right Settings Gear Link
+                NavigationLink(destination: SettingsView()) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(Color.appPrimaryText)
                 }
-                .font(.system(size: UIConstants.telemetryFontSize, weight: .semibold, design: .rounded))
-                .foregroundColor(Color.appSecondaryText)
-                .lineLimit(UIConstants.singleLineLimit)
-                .minimumScaleFactor(UIConstants.minimumScaleFactorRatio)
             }
 
-            Spacer()
+            // Full-Width Telemetry Sub-Header Row: Temp • RH • Battery
+            HStack(spacing: UIConstants.telemetryHStackSpacing) {
+                Label(temperatureText, systemImage: "thermometer.medium")
 
-            // Alchemical Air Symbol Brand Emblem Logo
-            AlchemicalAirSymbol()
-                .frame(width: UIConstants.emblemSize, height: UIConstants.emblemSize)
-                .foregroundColor(Color.appPrimaryText)
+                Text(UIConstants.separatorText)
+                    .foregroundColor(Color.appSecondaryText)
+
+                Label(humidityText, systemImage: "humidity")
+
+                Text(UIConstants.separatorText)
+                    .foregroundColor(Color.appSecondaryText)
+
+                Label(
+                    UIConstants.formattedBatteryText(batteryLevel),
+                    systemImage: batteryIconName
+                )
+            }
+            .font(
+                .system(
+                    size: UIConstants.telemetryFontSize,
+                    weight: .semibold,
+                    design: .rounded
+                )
+            )
+            .foregroundColor(Color.appSecondaryText)
+            .lineLimit(UIConstants.singleLineLimit)
+            .minimumScaleFactor(UIConstants.minimumScaleFactorRatio)
         }
     }
 }

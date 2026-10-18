@@ -10,18 +10,19 @@ struct BreathOdorInsightCard: View {
 
     private struct UIConstants {
         static let cardTitle = "Breath Odor Insight"
-        static let startButtonText = "Start"
-        static let cancelButtonText = "Cancel"
-
         static let titleFontSize: CGFloat = 18.0
-        static let buttonFontSize: CGFloat = 15.0
-        static let statusFontSize: CGFloat = 14.0
-        static let buttonHeight: CGFloat = 40.0
-        static let cornerRadius: CGFloat = 10.0
-        static let cardPadding: CGFloat = 16.0
+        static let statusFontSize: CGFloat = 13.0
+        static let buttonSize: CGFloat = 38.0
+        static let buttonCornerRadius: CGFloat = 10.0
+        static let cardPaddingHorizontal: CGFloat = 16.0
+        static let cardPaddingVertical: CGFloat = 14.0
     }
 
-    /// Derives active guidance text to render below action buttons matching BreathTestState
+    private var isTesting: Bool {
+        bleManager.breathTestState != .idle && bleManager.breathTestState != .completed
+    }
+
+    /// Derives active guidance text matching BreathTestState
     private var activeGuidanceText: String? {
         switch bleManager.breathTestState {
         case .coldBootWarmup:
@@ -41,7 +42,7 @@ struct BreathOdorInsightCard: View {
         }
     }
 
-    /// Color coding for dynamic guidance banner
+    /// Color coding for dynamic guidance text
     private var activeGuidanceColor: Color {
         switch bleManager.breathTestState {
         case .coldBootWarmup, .warmingUp, .processing:
@@ -58,49 +59,48 @@ struct BreathOdorInsightCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Header Bar
-            Text(UIConstants.cardTitle)
-                .font(.system(size: UIConstants.titleFontSize, weight: .bold, design: .rounded))
-                .foregroundColor(Color.appPrimaryText)
+        VStack(alignment: .leading, spacing: 8) {
+            // Header Row: Title + Compact Square Toggle Button
+            HStack(alignment: .center) {
+                Text(UIConstants.cardTitle)
+                    .font(.system(size: UIConstants.titleFontSize, weight: .bold, design: .rounded))
+                    .foregroundColor(Color.appPrimaryText)
 
-            // Primary Action Buttons
-            HStack(spacing: 12) {
-                Button(action: {
-                    bleManager.triggerBreathTest()
-                }) {
-                    Text(UIConstants.startButtonText)
-                        .font(.system(size: UIConstants.buttonFontSize, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: UIConstants.buttonHeight)
-                        .background(bleManager.isConnected ? Color.black.opacity(0.85) : Color.gray)
-                        .cornerRadius(UIConstants.cornerRadius)
-                }
-                .disabled(!bleManager.isConnected || bleManager.breathTestState != .idle)
+                Spacer()
 
                 Button(action: {
-                    bleManager.cancelBreathTest()
+                    withAnimation(.easeInOut) {
+                        if isTesting {
+                            bleManager.cancelBreathTest()
+                        } else {
+                            bleManager.triggerBreathTest()
+                        }
+                    }
                 }) {
-                    Text(UIConstants.cancelButtonText)
-                        .font(.system(size: UIConstants.buttonFontSize, weight: .semibold, design: .rounded))
-                        .foregroundColor(Color.appPrimaryText)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: UIConstants.buttonHeight)
-                        .background(Color.gray.opacity(0.20))
-                        .cornerRadius(UIConstants.cornerRadius)
+                    Image(systemName: isTesting ? "square.fill" : "play.fill")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundColor(isTesting ? Color.white : Color.appPrimaryText)
+                        .frame(width: UIConstants.buttonSize, height: UIConstants.buttonSize)
+                        .background(
+                            isTesting
+                                ? Color.red.opacity(0.85)
+                                : Color.white.opacity(0.60)
+                        )
+                        .cornerRadius(UIConstants.buttonCornerRadius)
                 }
+                .disabled(!bleManager.isConnected && !isTesting)
             }
 
-            // Dynamic Live Guidance / Status Banner below buttons
+            // Live Dynamic Guidance / Status Evaluation Text
             if let guidanceText = activeGuidanceText {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     if bleManager.breathTestState == .coldBootWarmup ||
                        bleManager.breathTestState == .warmingUp ||
                        bleManager.breathTestState == .processing {
                         ProgressView()
-                            .scaleEffect(0.8)
+                            .scaleEffect(0.7)
                     }
+                    
                     Text(guidanceText)
                         .font(.system(size: UIConstants.statusFontSize, weight: .semibold, design: .rounded))
                         .foregroundColor(activeGuidanceColor)
@@ -110,8 +110,15 @@ struct BreathOdorInsightCard: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(UIConstants.cardPadding)
-        .glassCardStyle()
+        .padding(.horizontal, UIConstants.cardPaddingHorizontal)
+        .padding(.vertical, UIConstants.cardPaddingVertical)
+        // Bright translucent white card background
+        .background(Color.white.opacity(0.40))
+        .cornerRadius(16)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.white.opacity(0.50), lineWidth: 1)
+        )
         .animation(.smooth(duration: 0.3), value: bleManager.breathTestState)
     }
 }

@@ -7,21 +7,22 @@ import SwiftUI
 
 struct VotreAirDashboardView: View {
     @ObservedObject var bleManager: BluetoothManager
-
-    @State private var visibleCardCount: Int = UIConstants.initialCardLimit
     @State private var highlightedSampleID: Date? = nil
 
     private struct UIConstants {
         static let sectionTitle = "YOUR AIR INSIGHTS"
-        static let loadMoreButtonText = "Load More Insights"
-        static let initialCardLimit: Int = 10
-        static let pageSizeIncrement: Int = 10
+        static let seeAllText = "See All"
+        static let dashboardCardLimit: Int = 3
 
         static let sectionTitleFontSize: CGFloat = 12.0
-        static let loadMoreFontSize: CGFloat = 13.0
-        static let buttonHeight: CGFloat = 36.0
-        static let buttonCornerRadius: CGFloat = 10.0
+        static let seeAllFontSize: CGFloat = 13.0
+        
+        static let mainVStackSpacing: CGFloat = 20.0
+        static let cardsVStackSpacing: CGFloat = 14.0
+        static let sectionVStackSpacing: CGFloat = 12.0
+        
         static let outerPadding: CGFloat = 16.0
+        static let bottomScrollViewPadding: CGFloat = 24.0
         
         static let newResultHighlightDuration: Double = 3.0
     }
@@ -60,7 +61,6 @@ struct VotreAirDashboardView: View {
         }
     }
 
-    /// All unique valid historical breath test evaluation samples in memory
     private var allBreathSamples: [MesoNoseSample] {
         var uniqueSamples: [MesoNoseSample] = []
 
@@ -79,16 +79,15 @@ struct VotreAirDashboardView: View {
         return uniqueSamples
     }
 
-    /// Paginated subset of unique diagnostic result cards currently displayed
-    private var visibleBreathSamples: [MesoNoseSample] {
-        Array(allBreathSamples.prefix(visibleCardCount))
+    private var recentBreathSamples: [MesoNoseSample] {
+        Array(allBreathSamples.prefix(UIConstants.dashboardCardLimit))
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    // Header Bar
+                VStack(spacing: UIConstants.mainVStackSpacing) {
+                    // Header Bar with Top-Right Settings Gear Link
                     VotreAirHeaderView(
                         temperatureText: formattedTemperature,
                         humidityText: formattedHumidity,
@@ -96,58 +95,54 @@ struct VotreAirDashboardView: View {
                         batteryIconName: batteryIconName
                     )
 
-                    // Integrated Breath Odor Insight Action Card (Without status row)
+                    // Translucent Action Card
                     BreathOdorInsightCard(bleManager: bleManager)
+
+                    Spacer(minLength: 20)
 
                     // Your Air Insights Section
                     if !allBreathSamples.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(UIConstants.sectionTitle)
-                                .font(.system(size: UIConstants.sectionTitleFontSize, weight: .bold, design: .rounded))
-                                .foregroundColor(Color.appSecondaryText)
-                                .padding(.horizontal, 4)
+                        VStack(alignment: .leading, spacing: UIConstants.sectionVStackSpacing) {
+                            // Section Header with "See All"
+                            HStack {
+                                Text(UIConstants.sectionTitle)
+                                    .font(.system(size: UIConstants.sectionTitleFontSize, weight: .bold, design: .rounded))
+                                    .foregroundColor(Color.appSecondaryText)
 
-                            // Render unique diagnostic cards
-                            ForEach(visibleBreathSamples, id: \.timestamp) { sample in
-                                let isNewResult = (sample.timestamp == highlightedSampleID)
-                                
-                                MesoNoseResultCard(sample: sample)
-                                    .scaleEffect(isNewResult ? 1.03 : 1.0)
-                                    .shadow(color: isNewResult ? Color.green.opacity(0.40) : Color.clear, radius: 8)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .stroke(isNewResult ? Color.green : Color.clear, lineWidth: 2)
-                                    )
-                                    .animation(.easeInOut(duration: 0.4), value: isNewResult)
-                            }
+                                Spacer()
 
-                            // Lazy-loading pagination button
-                            if visibleCardCount < allBreathSamples.count {
-                                Button(action: {
-                                    withAnimation(.smooth) {
-                                        visibleCardCount += UIConstants.pageSizeIncrement
-                                        bleManager.loadMoreHistoricalData()
-                                    }
-                                }) {
-                                    Text(UIConstants.loadMoreButtonText)
-                                        .font(.system(size: UIConstants.loadMoreFontSize, weight: .semibold, design: .rounded))
+                                NavigationLink(destination: AirQualityHistoryView(bleManager: bleManager)) {
+                                    Text(UIConstants.seeAllText)
+                                        .font(.system(size: UIConstants.seeAllFontSize, weight: .semibold, design: .rounded))
                                         .foregroundColor(Color.appPrimaryText)
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: UIConstants.buttonHeight)
-                                        .background(Color.gray.opacity(0.15))
-                                        .cornerRadius(UIConstants.buttonCornerRadius)
                                 }
-                                .padding(.top, 4)
+                            }
+                            .padding(.horizontal, 4)
+
+                            VStack(spacing: UIConstants.cardsVStackSpacing) {
+                                ForEach(recentBreathSamples, id: \.timestamp) { sample in
+                                    let isNewResult = (sample.timestamp == highlightedSampleID)
+                                    
+                                    MesoNoseResultCard(sample: sample)
+                                        .scaleEffect(isNewResult ? 1.03 : 1.0)
+                                        .shadow(color: isNewResult ? Color.green.opacity(0.40) : Color.clear, radius: 8)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .stroke(isNewResult ? Color.green : Color.clear, lineWidth: 2)
+                                        )
+                                        .animation(.easeInOut(duration: 0.4), value: isNewResult)
+                                }
                             }
                         }
                     }
                 }
-                .padding(UIConstants.outerPadding)
+                .padding(.horizontal, UIConstants.outerPadding)
+                .padding(.top, UIConstants.outerPadding)
+                .padding(.bottom, UIConstants.bottomScrollViewPadding)
             }
             .globalAppBackground()
             .onChange(of: bleManager.breathTestState) { _, newState in
                 if newState == .completed, let newestSample = allBreathSamples.first {
-                    // Highlight the brand new result card for exactly 3 seconds
                     withAnimation {
                         highlightedSampleID = newestSample.timestamp
                     }

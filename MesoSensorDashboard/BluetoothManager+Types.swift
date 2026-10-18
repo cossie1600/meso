@@ -29,7 +29,7 @@ struct BMConstants {
 
     static let defaultFailureReason = "TIMEOUT"
     static let uiDisplayHoldDurationSeconds: Double = 3.0
-    static let purgeWindowSeconds: TimeInterval = 180.0
+    static let purgeWindowSeconds: TimeInterval = 60.0
     static let notificationStateDelaySeconds: Double = 0.3
     static let initialBurstDurationSeconds: Double = 15.0
     static let blowWindowTimeoutSeconds: Double = 32.0

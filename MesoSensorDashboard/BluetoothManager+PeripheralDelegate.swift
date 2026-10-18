@@ -70,7 +70,6 @@ extension BluetoothManager: CBPeripheralDelegate {
         }
     }
 
-    // BluetoothManager+PeripheralDelegate.swift
 
     func peripheral(
         _ peripheral: CBPeripheral,
