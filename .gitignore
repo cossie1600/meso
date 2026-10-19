@@ -15,3 +15,6 @@ _autosave-*
 *.drl
 *.history
 *.zip
+*.vscode
+venv
+*.step
