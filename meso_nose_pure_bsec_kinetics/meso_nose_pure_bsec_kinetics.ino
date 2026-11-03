@@ -75,8 +75,10 @@ constexpr uint32_t BASELINE_CAPTURE_TIMEOUT_MS = 15000UL;
 constexpr float HW_MIN_SENSOR_GAS_RES = 5000.0f;
 
 constexpr float PARTIAL_EXHALATION_MIN_DELTA_RH_PCT = 0.8f;
-constexpr float EXHALATION_MIN_MOISTURE_DELTA_RH_PCT = 20.0f;
+constexpr float EXHALATION_MIN_MOISTURE_DELTA_RH_PCT = 6.0f;
 constexpr float EXHALATION_MIN_GAS_DROP_PCT          = 5.0f;
+constexpr float EXHALATION_FORCE_TRIGGER_GAS_DROP_PCT = 15.0f;
+constexpr uint32_t THERMAL_TRANSIENT_SUPPRESSION_MS   = 4000;
 
 constexpr float T50_CALCULATION_FACTOR = 0.5f;
 constexpr float HIGH_BASELINE_HUMIDITY_THRESHOLD_PCT = 80.0f;
@@ -97,6 +99,11 @@ constexpr const char *CMD_BREATH_CHAR = "b";
 constexpr const char *CMD_BREATH_FULL = "breath";
 constexpr const char *CMD_DIAG_SELECTIVITY = "test_selectivity";
 constexpr const char *CMD_DIAG_NUMERIC = "99";
+
+constexpr const char *CMD_SET_ACTIVE_SAMPLING = "set_active_sampling_mode";
+constexpr const char *CMD_SET_ULP_SAMPLING    = "set_ultra_low_sampling_mode";
+constexpr const char *STATE_PROFILE_LP        = "PROFILE_LP";
+constexpr const char *STATE_PROFILE_ULP       = "PROFILE_ULP";
 
 bool systemReady = false;
 enum OperationMode { MODE_IDLE, MODE_DRY_AIR_DETECTION, MODE_BREATH_TEST, MODE_DIAGNOSTIC };
@@ -262,32 +269,54 @@ bool waitForBreathExhalation(float baseGasRes, float baseHumidity, float baseTem
   while ((millis() - startMs) < BREATH_WAIT_TIMEOUT_MS) {
     float currentGasRes = 0.0f;
     if (readBsecFrame(currentGasRes)) {
-      float deltaHumidity = sensorData.currentHumidity - baseHumidity;
-      float gasDropPct    = (baseGasRes > 0.0f) ? (((baseGasRes - currentGasRes) / baseGasRes) * 100.0f) : 0.0f;
+      float rawDeltaRH = sensorData.currentHumidity - baseHumidity;
+      float gasDropPct = (baseGasRes > 0.0f) ? (((baseGasRes - currentGasRes) / baseGasRes) * 100.0f) : 0.0f;
+
+      // Defect 3 Fix: Suppress initial negative cooling transient within the first 4 seconds
+      const bool isInsideThermalTransientWindow = ((millis() - startMs) < THERMAL_TRANSIENT_SUPPRESSION_MS);
+      float effectiveDeltaRH = (isInsideThermalTransientWindow && rawDeltaRH < 0.0f) ? 0.0f : rawDeltaRH;
 
       if (currentGasRes < outMinRes) outMinRes = currentGasRes;
-      if (deltaHumidity > outMaxDeltaRH) outMaxDeltaRH = deltaHumidity;
+      if (effectiveDeltaRH > outMaxDeltaRH) outMaxDeltaRH = effectiveDeltaRH;
 
-      dispatchData("{\"dH\":" + String(deltaHumidity, 1) + ",\"gDrop\":" + String(gasDropPct, 1) + "}");
+      // Telemetry dispatch
+      dispatchData("{\"dH\":" + String(rawDeltaRH, 1) + ",\"gDrop\":" + String(gasDropPct, 1) + "}");
 
       VERBOSE_LOG("[BLOW MONITOR]: GasRes=" + String((long)currentGasRes) + 
                   " Ohm | gDrop=" + String(gasDropPct, 1) + 
-                  "% | dH=" + String(deltaHumidity, 1) + "%");
+                  "% | dH=" + String(rawDeltaRH, 1) + "%");
 
-      bool isMoistSpike = (deltaHumidity >= EXHALATION_MIN_MOISTURE_DELTA_RH_PCT);
-      bool isGasDrop = (gasDropPct >= EXHALATION_MIN_GAS_DROP_PCT);
-      
-      if (baseHumidity >= HIGH_BASELINE_HUMIDITY_THRESHOLD_PCT && isGasDrop) {
-        logMessage("[BLOW TRIGGERED]: High ambient humidity blow condition detected!");
+      // Condition A: Standard balanced breath (Moderate VOC drop + realistic moisture spike)
+      const bool isStandardBreath = (effectiveDeltaRH >= EXHALATION_MIN_MOISTURE_DELTA_RH_PCT) && 
+                                    (gasDropPct >= EXHALATION_MIN_GAS_DROP_PCT);
+
+      // Condition B: High ambient background humidity (Room RH > 80%)
+      const bool isHighAmbientHum = (baseHumidity >= HIGH_BASELINE_HUMIDITY_THRESHOLD_PCT) && 
+                                    (gasDropPct >= EXHALATION_MIN_GAS_DROP_PCT);
+
+      // Defect 2 Fix: Absolute VOC magnitude latch
+      // If VOCs drop heavily (>= 15%), it is unmistakably an exhalation directly into the sensor
+      const bool isStrongVocLatch = (gasDropPct >= EXHALATION_FORCE_TRIGGER_GAS_DROP_PCT);
+
+      if (isStrongVocLatch) {
+        logMessage("[BLOW TRIGGERED]: Absolute VOC drop latch met (" + String(gasDropPct, 1) + "% >= " + 
+                   String(EXHALATION_FORCE_TRIGGER_GAS_DROP_PCT, 1) + "%)!");
         return true;
       }
-      if (isMoistSpike && isGasDrop) {
+
+      if (isStandardBreath) {
         logMessage("[BLOW TRIGGERED]: Valid moisture spike and gas drop detected!");
+        return true;
+      }
+
+      if (isHighAmbientHum) {
+        logMessage("[BLOW TRIGGERED]: High ambient humidity blow condition detected!");
         return true;
       }
     }
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
+
   logMessage("[BLOW TIMEOUT]: Exhalation wait window expired without blow detection.");
   return false;
 }
@@ -527,6 +556,24 @@ void handleCommand(String command) {
     pendingBreathCommand = true;
   } else if (command == CMD_DIAG_SELECTIVITY || command == CMD_DIAG_NUMERIC) {
     pendingDiagCommand = true;
+  }
+  // --- Regression A Fix: Handle Active LP Mode (3s) ---
+  else if (command == CMD_SET_ACTIVE_SAMPLING) {
+    if (currentProfile != PROFILE_LP_3S) {
+      updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
+      currentProfile = PROFILE_LP_3S;
+      dispatchData("{\"state\":\"" + String(STATE_PROFILE_LP) + "\"}");
+      logMessage("[POWER]: Transitioned to BSEC LP (3s) Mode.");
+    }
+  } 
+  // --- Regression A Fix: Handle Ultra Low Power Mode (300s) ---
+  else if (command == CMD_SET_ULP_SAMPLING) {
+    if (currentProfile != PROFILE_ULP_300S && currentMode != MODE_BREATH_TEST) {
+      updateBsecSubscription(BSEC_SAMPLE_RATE_ULP);
+      currentProfile = PROFILE_ULP_300S;
+      dispatchData("{\"state\":\"" + String(STATE_PROFILE_ULP) + "\"}");
+      logMessage("[POWER]: Transitioned to BSEC ULP (300s) Mode.");
+    }
   }
 }
 
