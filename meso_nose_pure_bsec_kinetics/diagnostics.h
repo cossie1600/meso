@@ -4,5 +4,6 @@
 #include <Arduino.h>
 
 bool runSelectivityDiagnosticTest();
+bool runPowerAndKineticsDiagnosticTest();
 
 #endif // DIAGNOSTICS_H

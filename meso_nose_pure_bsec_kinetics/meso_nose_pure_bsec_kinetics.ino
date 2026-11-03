@@ -97,6 +97,8 @@ constexpr const char *RESULT_NONE = "NONE";
 constexpr const char *CMD_BREATH_SHORT = "3";
 constexpr const char *CMD_BREATH_CHAR = "b";
 constexpr const char *CMD_BREATH_FULL = "breath";
+constexpr const char *CMD_DIAG_POWER_KINETICS = "test_power_kinetics";
+constexpr const char *CMD_DIAG_POWER_NUMERIC  = "98";
 constexpr const char *CMD_DIAG_SELECTIVITY = "test_selectivity";
 constexpr const char *CMD_DIAG_NUMERIC = "99";
 
@@ -106,7 +108,7 @@ constexpr const char *STATE_PROFILE_LP        = "PROFILE_LP";
 constexpr const char *STATE_PROFILE_ULP       = "PROFILE_ULP";
 
 bool systemReady = false;
-enum OperationMode { MODE_IDLE, MODE_DRY_AIR_DETECTION, MODE_BREATH_TEST, MODE_DIAGNOSTIC };
+enum OperationMode { MODE_IDLE, MODE_BREATH_TEST, MODE_DIAGNOSTIC };
 enum BsecProfile { PROFILE_OFF, PROFILE_ULP_300S, PROFILE_LP_3S };
 
 OperationMode currentMode = MODE_IDLE;
@@ -446,8 +448,8 @@ void runBreathSequence() {
   }
   
   updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
-  currentProfile = PROFILE_LP_3S;
-  currentMode = MODE_DRY_AIR_DETECTION;
+  currentProfile = PROFILE_ULP_300S;
+  currentMode = MODE_IDLE;
   logMessage("[SEQUENCE END]: Breath test complete. Restored BSEC LP mode.");
 }
 
@@ -554,10 +556,7 @@ void handleCommand(String command) {
     dryAirActive = false; 
     currentMode = MODE_BREATH_TEST; 
     pendingBreathCommand = true;
-  } else if (command == CMD_DIAG_SELECTIVITY || command == CMD_DIAG_NUMERIC) {
-    pendingDiagCommand = true;
-  }
-  // --- Regression A Fix: Handle Active LP Mode (3s) ---
+  }   
   else if (command == CMD_SET_ACTIVE_SAMPLING) {
     if (currentProfile != PROFILE_LP_3S) {
       updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
@@ -566,7 +565,6 @@ void handleCommand(String command) {
       logMessage("[POWER]: Transitioned to BSEC LP (3s) Mode.");
     }
   } 
-  // --- Regression A Fix: Handle Ultra Low Power Mode (300s) ---
   else if (command == CMD_SET_ULP_SAMPLING) {
     if (currentProfile != PROFILE_ULP_300S && currentMode != MODE_BREATH_TEST) {
       updateBsecSubscription(BSEC_SAMPLE_RATE_ULP);
@@ -574,6 +572,16 @@ void handleCommand(String command) {
       dispatchData("{\"state\":\"" + String(STATE_PROFILE_ULP) + "\"}");
       logMessage("[POWER]: Transitioned to BSEC ULP (300s) Mode.");
     }
+  }
+  else if (command == CMD_DIAG_SELECTIVITY || command == CMD_DIAG_NUMERIC) {
+    pendingDiagCommand = true;
+  }
+  else if (command == CMD_DIAG_POWER_KINETICS || command == CMD_DIAG_POWER_NUMERIC) {
+    logMessage("[DIAG START]: Processing Command 98 (Power & Kinetics Suite)...");
+    currentMode = MODE_DIAGNOSTIC;
+    runPowerAndKineticsDiagnosticTest();
+    currentMode = MODE_IDLE;
+    logMessage("[DIAG COMPLETE]: Power & Kinetics suite completed.");
   }
 }
 
