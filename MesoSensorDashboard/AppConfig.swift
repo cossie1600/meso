@@ -8,7 +8,7 @@
 import Foundation
 import SwiftUI
 
-// 🎛️ Global Sampling Mode Enum
+// Global Sampling Mode Enum
 enum SamplingMode: String, CaseIterable, Identifiable {
     case active3s = "Active Sampling (3s)"
     case ulp5m = "Ultra Low Power (5m)"
@@ -18,7 +18,7 @@ enum SamplingMode: String, CaseIterable, Identifiable {
 }
 
 struct AppConfig {
-    // 🎛️ Environment-Specific Toggles & Config
+    // Environment-Specific Toggles & Config
     static let useMockSimulatorBridge: Bool = false
     static let forceInitialEmergencyState: Bool = false
     static let simulatorSpeedSec: TimeInterval = 5.0
@@ -28,7 +28,7 @@ struct AppConfig {
     // Default Sampling Configuration
     static var samplingMode: SamplingMode = .ulp5m
 
-    // 📡 BLE Hardware Identification
+    // BLE Hardware Identification
     // Meso Pin (BMV080 Air Quality)
     static let firmwareServiceUUIDString: String =
         "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -44,10 +44,10 @@ struct AppConfig {
     // App Info
     static let companyName = "ClingGem"
 
-    // 🧹 Database Cleanup Policy
+    // Database Cleanup Policy
     static let databaseRetentionDays: Int = 30
 
-    // 🚨 Logging Properties
+    // Logging Properties
     static let isLoggingEnabled: Bool = true
     static let applogFileName: String = "meso_sensor_log.txt"
     static let maxLogSizeInMB: Int = 5
@@ -65,7 +65,7 @@ struct AppConfig {
     // Air Quality Spike Thresholds
     static let pm25AlertThreshold: Double = 35.0
     static let pm10AlertThreshold: Double = 75.0
-    static let vocWarmupSpikeThreshold: Double = 2_000_000.0  // 👈 Added for MOX spike filter
+    static let vocWarmupSpikeThreshold: Double = 2_000_000.0
 
     static let coarseParticleAlertThreshold: Double = 0.70
     static let ultraFineParticleAlertThreshold: Double = 5.0
@@ -83,7 +83,7 @@ struct AppConfig {
     /// Hardware teardown delay (in seconds) before triggering post-test active purge.
     static let firmwareTeardownDelay: TimeInterval = 1.5
 
-    // 🎨 Shared Dashboard UI Tokens & Formatting
+    // Shared Dashboard UI Tokens & Formatting
     enum DashboardUI {
         static let cardSpacing: CGFloat = 8
         static let metricGridSpacing: CGFloat = 12
@@ -103,7 +103,7 @@ struct AppConfig {
         }
     }
 
-    // 🔑 BME688 JSON Payload Discriminators
+    // BME688 JSON Payload Discriminators
     enum MesoNoseKeys {
         static let temp = "temp"
         static let press = "press"
@@ -152,7 +152,7 @@ struct AppConfig {
                 "\n-------------------------------------------------------------"
             )
             print(
-                "📁 CURRENT RUN LOG PATH:\n\(docs.appendingPathComponent(applogFileName).path)"
+                "CURRENT RUN LOG PATH:\n\(docs.appendingPathComponent(applogFileName).path)"
             )
             print(
                 "-------------------------------------------------------------\n"
