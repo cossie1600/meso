@@ -215,6 +215,8 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol {
     }
 
     func setSamplingMode(mode: SamplingMode = AppConfig.samplingMode) {
+        guard currentSamplingMode != mode else { return }
+        
         if mode == .ulp5m && breathTestState != .idle {
             AppLogger.writeLog(BMLogMessages.blockedUlpTransition(breathTestState))
             return

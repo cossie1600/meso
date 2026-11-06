@@ -95,7 +95,7 @@ extension BluetoothManager: CBPeripheralDelegate {
                 }
 
                 AppLogger.writeLog(BMLogMessages.handshakeTriggeringBurst)
-                self.sendMesoNoseCommand(.setUltraLowSamplingMode)
+                
                 self.cancelInitialBurstTimer()
 
                 let workItem = DispatchWorkItem { [weak self] in

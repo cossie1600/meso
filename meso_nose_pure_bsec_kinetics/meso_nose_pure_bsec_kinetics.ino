@@ -112,16 +112,21 @@ constexpr const char *STATE_PROFILE_ULP       = "PROFILE_ULP";
 
 namespace MesoPowerConfig {
   constexpr int8_t BSEC_STATUS_CONFIG_FAIL = 14;
+  constexpr uint32_t CPU_LOW_POWER_FREQ_MHZ = 80; // Stable APB clock for NimBLE radio
   constexpr int CPU_FREQ_MAX_MHZ = 80;
   constexpr int CPU_FREQ_MIN_MHZ = 10;
+  constexpr bool ENABLE_AUTOMATIC_LIGHT_SLEEP = true;
 }
 
 namespace MesoPowerLogs {
+  constexpr const char *PM_LIGHT_SLEEP_ACTIVE = "[PM]: Automatic Light Sleep & DFS initialized successfully.";
   constexpr const char *PM_INIT_SUCCESS       = "[PM]: Dynamic frequency scaling active (80MHz/10MHz).";
   constexpr const char *PM_INIT_FAILED        = "[PM ERROR]: esp_pm_configure failed.";
   constexpr const char *BSEC_CLEAN_ULP_INIT   = "[BSEC]: Default config active for ULP (300s) mode.";
   constexpr const char *BSEC_CUSTOM_LP_INIT   = "[BSEC]: Custom selectivity config active for LP (3s) mode.";
   constexpr const char *BSEC_SUB_FAIL         = "[BSEC ERROR]: updateSubscription failed: ";
+  constexpr const char *CPU_FREQ_CONFIG_SUCCESS = "[POWER]: CPU clock scaled down to 80 MHz (Low Power Mode).";
+  constexpr const char *CPU_FREQ_CONFIG_FAIL    = "[POWER ERROR]: Failed to adjust CPU clock frequency.";
 }
 
 namespace BleConnParams {
@@ -196,30 +201,33 @@ void logMessage(String msg) {
   }
 }
 
-// bool updateBsecSubscription(float sampleRate) {
-//   if (!bsec) return false;
-//   return bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_LP);
-// }
 bool updateBsecSubscription(float sampleRate) {
-  if (!bsec) return false;
+  if (!bsecReady || bsec == nullptr) return false;
 
-  if (sampleRate == BSEC_SAMPLE_RATE_ULP) {
-    bool success = bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_ULP);
-    if (!success && bsec->status == MesoPowerConfig::BSEC_STATUS_CONFIG_FAIL) {
-      // Re-initialize BSEC instance cleanly for ambient ULP monitoring
-      bsec->begin(bmeI2cAddr, Wire);
-      bsec->attachCallback(newDataCallback);
-      success = bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_ULP);
-      logMessage(String(MesoPowerLogs::BSEC_CLEAN_ULP_INIT));
+  // 1. Non-destructively clear existing scheduler entries without deleting the object
+  bsec->updateSubscription(nullptr, 0, 0.0f);
+
+  if (sampleRate == BSEC_SAMPLE_RATE_LP) {
+    // Apply custom selectivity configuration for 3s active sensing
+    bsec->setConfig(bsec_config_iaq);
+    bool success = bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_LP);
+    if (success) {
+      currentProfile = PROFILE_LP_3S;
+      logMessage(String(MesoPowerLogs::BSEC_CUSTOM_LP_INIT));
+    } else {
+      logMessage(String(MesoPowerLogs::BSEC_SUB_FAIL) + String(bsec->status));
     }
     return success;
   }
 
-  if (sampleRate == BSEC_SAMPLE_RATE_LP) {
-    bsec->setConfig(bsec_config_iaq);
-    bool success = bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_LP);
+  if (sampleRate == BSEC_SAMPLE_RATE_ULP) {
+    // Re-initialize driver state cleanly without destroying the C++ instance
+    bsec->begin(bmeI2cAddr, Wire);
+    bsec->attachCallback(newDataCallback);
+    bool success = bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_ULP);
     if (success) {
-      logMessage(String(MesoPowerLogs::BSEC_CUSTOM_LP_INIT));
+      currentProfile = PROFILE_ULP_300S;
+      logMessage(String(MesoPowerLogs::BSEC_CLEAN_ULP_INIT));
     } else {
       logMessage(String(MesoPowerLogs::BSEC_SUB_FAIL) + String(bsec->status));
     }
@@ -651,7 +659,7 @@ void handleCommand(String command) {
 }
 
 class ServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) { 
+  void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) override { 
     deviceConnected = true; 
     pendingFlush = true; 
 
@@ -666,7 +674,13 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     
     if (bsec != nullptr && currentMode != MODE_BREATH_TEST) {
       resetToULP();
-      logMessage("[BLE CONNECT]: Maintained BSEC LP 300s Mode.");
+      logMessage(String(MesoLogStrings::LOG_BLE_RESTORE_ULP));
+      
+      // Dispatch immediate cached reading so iOS UI unlocks without forcing LP mode
+      if (sensorData.currentGasRes > 0.0f || sensorData.currentTemp != 0.0f) {
+        sensorData.batteryPct = readBatteryPercentage();
+        dispatchData(sensorData.toJsonString());
+      }
     }
   }
   void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) { 
@@ -746,18 +760,24 @@ void setup() {
   analogReadResolution(BATTERY_ADC_RESOLUTION_BITS); 
   analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
 
-#if CONFIG_PM_ENABLE
+  if (setCpuFrequencyMhz(MesoPowerConfig::CPU_LOW_POWER_FREQ_MHZ)) {
+    logMessage(String(MesoPowerLogs::CPU_FREQ_CONFIG_SUCCESS));
+  } else {
+    logMessage(String(MesoPowerLogs::CPU_FREQ_CONFIG_FAIL));
+  }
+
   esp_pm_config_esp32_t pmConfig = {
     .max_freq_mhz = MesoPowerConfig::CPU_FREQ_MAX_MHZ,
     .min_freq_mhz = MesoPowerConfig::CPU_FREQ_MIN_MHZ,
-    .light_sleep_enable = false
+    .light_sleep_enable = MesoPowerConfig::ENABLE_AUTOMATIC_LIGHT_SLEEP
   };
-  if (esp_pm_configure(&pmConfig) == ESP_OK) {
-    logMessage(String(MesoPowerLogs::PM_INIT_SUCCESS));
+  esp_err_t pmResult = esp_pm_configure(&pmConfig);
+  if (pmResult == ESP_OK) {
+    logMessage(String(MesoPowerLogs::PM_LIGHT_SLEEP_ACTIVE));
   } else {
     logMessage(String(MesoPowerLogs::PM_INIT_FAILED));
   }
-#endif
+
   
   if (!LittleFS.begin(true, LITTLEFS_MOUNT_POINT, 10, "spiffs")) {
     logMessage("[LITTLEFS WARN]: Mount failed. Formatting LittleFS partition...");
@@ -811,19 +831,23 @@ void loop() {
   if (pendingDiagCommand) { pendingDiagCommand = false; executeDiagnosticSequence(); return; }
   if (pendingBreathCommand) { pendingBreathCommand = false; runBreathSequence(); return; }
 
+  // Protected execution block
   if (bsecReady && bsec != nullptr && bsec->status >= BSEC_OK && currentProfile != PROFILE_OFF && currentMode == MODE_IDLE) {
     bsec->run();
+    
     static unsigned long lastNotifyTime = 0;
     const uint32_t activeNotifyInterval = (currentProfile == PROFILE_LP_3S) 
                                           ? NOTIFY_LP_INTERVAL_MS 
                                           : NOTIFY_ULP_INTERVAL_MS;
+
     if ((millis() - lastNotifyTime) >= activeNotifyInterval) {
       lastNotifyTime = millis();
-      if (sensorData.currentGasRes > 0.0f) {
+      if (sensorData.currentGasRes > 0.0f || sensorData.currentTemp != 0.0f) {
         sensorData.batteryPct = readBatteryPercentage();
         dispatchData(sensorData.toJsonString());
       }
     }
   }
+  Serial.flush();
   vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
 }

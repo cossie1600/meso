@@ -722,7 +722,7 @@ extension BluetoothManager {
             self.breathTestState = .idle
             self.statusText = MesoNoseUIStrings.testCancelled
 
-            self.sendMesoNoseCommand(.setUltraLowSamplingMode)
+            self.setSamplingMode()
             AppLogger.writeLog(MesoNoseLogMessages.testCancelledUser)
         }
     }
@@ -786,7 +786,7 @@ extension BluetoothManager {
             AppLogger.writeLog(
                 "[TRACE]: Teardown delay elapsed. Dispatching set_ultra_low_sampling_mode."
             )
-            self.sendMesoNoseCommand(.setUltraLowSamplingMode)
+            self.setSamplingMode()
 
             // 4. Reset state back to .idle after UI display hold window
             DispatchQueue.main.asyncAfter(
