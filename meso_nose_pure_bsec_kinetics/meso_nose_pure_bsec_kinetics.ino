@@ -65,6 +65,7 @@ constexpr float BATTERY_VOLTAGE_DIVISER_FACTOR = 2.0f;
 constexpr uint32_t BLE_FLUSH_DELAY_MS = 30;
 
 constexpr uint32_t NOTIFY_ULP_INTERVAL_MS = 300000;
+constexpr uint32_t NOTIFY_LP_INTERVAL_MS  = 3000;
 constexpr uint32_t BREATH_WAIT_TIMEOUT_MS = 30000;
 constexpr uint32_t BREATH_SENSING_WINDOW_MS = 10000; 
 constexpr uint32_t RECOVERY_SENSING_WINDOW_MS = 15000; 
@@ -106,6 +107,39 @@ constexpr const char *CMD_SET_ACTIVE_SAMPLING = "set_active_sampling_mode";
 constexpr const char *CMD_SET_ULP_SAMPLING    = "set_ultra_low_sampling_mode";
 constexpr const char *STATE_PROFILE_LP        = "PROFILE_LP";
 constexpr const char *STATE_PROFILE_ULP       = "PROFILE_ULP";
+
+
+
+namespace MesoPowerConfig {
+  constexpr int8_t BSEC_STATUS_CONFIG_FAIL = 14;
+  constexpr int CPU_FREQ_MAX_MHZ = 80;
+  constexpr int CPU_FREQ_MIN_MHZ = 10;
+}
+
+namespace MesoPowerLogs {
+  constexpr const char *PM_INIT_SUCCESS       = "[PM]: Dynamic frequency scaling active (80MHz/10MHz).";
+  constexpr const char *PM_INIT_FAILED        = "[PM ERROR]: esp_pm_configure failed.";
+  constexpr const char *BSEC_CLEAN_ULP_INIT   = "[BSEC]: Default config active for ULP (300s) mode.";
+  constexpr const char *BSEC_CUSTOM_LP_INIT   = "[BSEC]: Custom selectivity config active for LP (3s) mode.";
+  constexpr const char *BSEC_SUB_FAIL         = "[BSEC ERROR]: updateSubscription failed: ";
+}
+
+namespace BleConnParams {
+  // Apple Accessory Design Guidelines Compliant Intervals (units of 1.25ms and 10ms)
+  constexpr uint16_t BLE_CONN_MIN_INTERVAL_UNITS         = 400; // 500 ms (400 * 1.25 ms)
+  constexpr uint16_t BLE_CONN_MAX_INTERVAL_UNITS         = 800; // 1000 ms (800 * 1.25 ms)
+  constexpr uint16_t BLE_CONN_SLAVE_LATENCY              = 4;   // Skip up to 4 intervals when idle
+  constexpr uint16_t BLE_CONN_SUPERVISION_TIMEOUT_UNITS  = 600; // 6000 ms (600 * 10 ms)
+}
+
+namespace MesoLogStrings {
+  constexpr const char *LOG_BLE_CONN_UPDATE_REQ   = "[BLE CONNECT]: Central connected. Negotiated 500-1000ms low-power interval.";
+  constexpr const char *LOG_BLE_RESTORE_ULP       = "[BLE CONNECT]: Connection established. Maintained ULP mode.";
+  constexpr const char *LOG_BSEC_INIT_BOOT_ULP   = "[BSEC INIT]: Engine Initialized & Booted Cleanly into ULP (300s) Mode.";
+  constexpr const char *LOG_BSEC_CONFIG_WARN      = "[BSEC WARN]: Custom setConfig failed (Code: ";
+  constexpr const char *LOG_BSEC_INIT_SUCCESS     = "[BSEC INIT]: Engine Initialized & Resting in ULP Mode.";
+  constexpr const char *LOG_BSEC_INIT_FAIL        = "[BSEC ERROR]: BSEC Initialization Failed!";
+}
 
 bool systemReady = false;
 enum OperationMode { MODE_IDLE, MODE_BREATH_TEST, MODE_DIAGNOSTIC };
@@ -162,9 +196,37 @@ void logMessage(String msg) {
   }
 }
 
+// bool updateBsecSubscription(float sampleRate) {
+//   if (!bsec) return false;
+//   return bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_LP);
+// }
 bool updateBsecSubscription(float sampleRate) {
   if (!bsec) return false;
-  return bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_LP);
+
+  if (sampleRate == BSEC_SAMPLE_RATE_ULP) {
+    bool success = bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_ULP);
+    if (!success && bsec->status == MesoPowerConfig::BSEC_STATUS_CONFIG_FAIL) {
+      // Re-initialize BSEC instance cleanly for ambient ULP monitoring
+      bsec->begin(bmeI2cAddr, Wire);
+      bsec->attachCallback(newDataCallback);
+      success = bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_ULP);
+      logMessage(String(MesoPowerLogs::BSEC_CLEAN_ULP_INIT));
+    }
+    return success;
+  }
+
+  if (sampleRate == BSEC_SAMPLE_RATE_LP) {
+    bsec->setConfig(bsec_config_iaq);
+    bool success = bsec->updateSubscription(defaultSensorList, numDefaultSensors, BSEC_SAMPLE_RATE_LP);
+    if (success) {
+      logMessage(String(MesoPowerLogs::BSEC_CUSTOM_LP_INIT));
+    } else {
+      logMessage(String(MesoPowerLogs::BSEC_SUB_FAIL) + String(bsec->status));
+    }
+    return success;
+  }
+
+  return bsec->updateSubscription(defaultSensorList, numDefaultSensors, sampleRate);
 }
 
 void newDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsecInst) {
@@ -218,12 +280,13 @@ bool readBsecFrame(float &outGasRes) {
 
 bool prepareAndCaptureBaseline(float &outBaselineRes, float &outBaseHumidity, float &outBaseTemp) {
   logMessage("[PREPARE BASELINE]: Capturing baseline samples in BSEC LP Mode...");
-  
-  if (!updateBsecSubscription(BSEC_SAMPLE_RATE_LP)) {
-    logMessage("[PREPARE BASELINE ERROR]: Failed to transition to LP Mode!");
-    return false;
+  if (currentProfile != PROFILE_LP_3S) {
+    if (!updateBsecSubscription(BSEC_SAMPLE_RATE_LP)) {
+      logMessage("[PREPARE BASELINE ERROR]: Failed to transition to LP Mode!");
+      return false;
+    }
+    currentProfile = PROFILE_LP_3S;
   }
-  currentProfile = PROFILE_LP_3S;
   
   float sumRes = 0.0f, sumHumidity = 0.0f, sumTemp = 0.0f;
   uint8_t validCount = 0;
@@ -409,6 +472,11 @@ void processBreathTestResults(float baseRes, float minRes, float maxDeltaHumidit
   resetTestEvaluationData();
 }
 
+void resetToULP() {
+  updateBsecSubscription(BSEC_SAMPLE_RATE_ULP);
+  currentProfile = PROFILE_ULP_300S;
+}
+
 void runBreathSequence() {
   logMessage("[SEQUENCE START]: Breath test sequence initiated (Pure BSEC LP).");
 
@@ -425,8 +493,7 @@ void runBreathSequence() {
 
   if (!prepareAndCaptureBaseline(baseRes, baseHumidity, baseTemp)) {
     logMessage("[SEQUENCE ABORTED]: Baseline capture failed!");
-    updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
-    currentProfile = PROFILE_LP_3S;
+    resetToULP();
     return;
   }
 
@@ -447,8 +514,7 @@ void runBreathSequence() {
     }
   }
   
-  updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
-  currentProfile = PROFILE_ULP_300S;
+  resetToULP();
   currentMode = MODE_IDLE;
   logMessage("[SEQUENCE END]: Breath test complete. Restored BSEC LP mode.");
 }
@@ -567,8 +633,7 @@ void handleCommand(String command) {
   } 
   else if (command == CMD_SET_ULP_SAMPLING) {
     if (currentProfile != PROFILE_ULP_300S && currentMode != MODE_BREATH_TEST) {
-      updateBsecSubscription(BSEC_SAMPLE_RATE_ULP);
-      currentProfile = PROFILE_ULP_300S;
+      resetToULP();
       dispatchData("{\"state\":\"" + String(STATE_PROFILE_ULP) + "\"}");
       logMessage("[POWER]: Transitioned to BSEC ULP (300s) Mode.");
     }
@@ -589,11 +654,19 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) { 
     deviceConnected = true; 
     pendingFlush = true; 
+
+    pServer->updateConnParams(
+      connInfo.getConnHandle(),
+      BleConnParams::BLE_CONN_MIN_INTERVAL_UNITS,
+      BleConnParams::BLE_CONN_MAX_INTERVAL_UNITS,
+      BleConnParams::BLE_CONN_SLAVE_LATENCY,
+      BleConnParams::BLE_CONN_SUPERVISION_TIMEOUT_UNITS
+    );
+    logMessage(String(MesoLogStrings::LOG_BLE_CONN_UPDATE_REQ));
     
     if (bsec != nullptr && currentMode != MODE_BREATH_TEST) {
-      updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
-      currentProfile = PROFILE_LP_3S;
-      logMessage("[BLE CONNECT]: Maintained BSEC LP 3s Mode.");
+      resetToULP();
+      logMessage("[BLE CONNECT]: Maintained BSEC LP 300s Mode.");
     }
   }
   void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) { 
@@ -672,6 +745,19 @@ void setup() {
   pinMode(BATTERY_ADC_PIN, INPUT); 
   analogReadResolution(BATTERY_ADC_RESOLUTION_BITS); 
   analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
+
+#if CONFIG_PM_ENABLE
+  esp_pm_config_esp32_t pmConfig = {
+    .max_freq_mhz = MesoPowerConfig::CPU_FREQ_MAX_MHZ,
+    .min_freq_mhz = MesoPowerConfig::CPU_FREQ_MIN_MHZ,
+    .light_sleep_enable = false
+  };
+  if (esp_pm_configure(&pmConfig) == ESP_OK) {
+    logMessage(String(MesoPowerLogs::PM_INIT_SUCCESS));
+  } else {
+    logMessage(String(MesoPowerLogs::PM_INIT_FAILED));
+  }
+#endif
   
   if (!LittleFS.begin(true, LITTLEFS_MOUNT_POINT, 10, "spiffs")) {
     logMessage("[LITTLEFS WARN]: Mount failed. Formatting LittleFS partition...");
@@ -701,16 +787,15 @@ void setup() {
   bsec = new Bsec2();
   if (bsec->begin(bmeI2cAddr, Wire)) {
     if (!bsec->setConfig(bsec_config_iaq)) {
-      logMessage("[BSEC WARN]: Custom setConfig failed (Code: " + String(bsec->status) + ")");
+      logMessage(String(MesoLogStrings::LOG_BSEC_CONFIG_WARN) + String(bsec->status) + ")");
     }
     
     bsecReady = true; 
-    currentProfile = PROFILE_LP_3S;
-    updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
     bsec->attachCallback(newDataCallback);
-    logMessage("[BSEC INIT]: Engine Initialized & Subscription Active.");
+    resetToULP();
+    logMessage(String(MesoLogStrings::LOG_BSEC_INIT_BOOT_ULP));
   } else {
-    logMessage("[BSEC ERROR]: BSEC Initialization Failed!");
+    logMessage(String(MesoLogStrings::LOG_BSEC_INIT_FAIL));
   }
   systemReady = true;
   logMessage("[SYS READY]: System Ready. Listening for BLE/Serial commands...");
@@ -729,7 +814,10 @@ void loop() {
   if (bsecReady && bsec != nullptr && bsec->status >= BSEC_OK && currentProfile != PROFILE_OFF && currentMode == MODE_IDLE) {
     bsec->run();
     static unsigned long lastNotifyTime = 0;
-    if ((millis() - lastNotifyTime) >= NOTIFY_ULP_INTERVAL_MS) {
+    const uint32_t activeNotifyInterval = (currentProfile == PROFILE_LP_3S) 
+                                          ? NOTIFY_LP_INTERVAL_MS 
+                                          : NOTIFY_ULP_INTERVAL_MS;
+    if ((millis() - lastNotifyTime) >= activeNotifyInterval) {
       lastNotifyTime = millis();
       if (sensorData.currentGasRes > 0.0f) {
         sensorData.batteryPct = readBatteryPercentage();

@@ -399,10 +399,7 @@ extension BluetoothManager {
             self.blowTimeoutTimer = nil
 
             self.breathTestState = .warmingUp
-            self.currentSamplingMode = .active3s
-            self.statusText = MesoNoseUIStrings.wakingAndPreheating
-
-            self.setActiveSamplingMode()
+            self.statusText = MesoNoseUIStrings.wakingAndPreheating          
 
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self = self, self.breathTestState == .warmingUp else {
