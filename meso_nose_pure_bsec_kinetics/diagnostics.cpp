@@ -85,9 +85,10 @@ bool runPowerAndKineticsDiagnosticTest() {
     logMessage("[DIAG 2/4 FAIL]: Failed to subscribe to ULP Mode! Status: " + String((int)bsec->status));
   }
 
-  // Restore LP mode for operational readiness
-  updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
-  currentProfile = PROFILE_LP_3S;
+  // Restore ULP mode for operational readiness
+  updateBsecSubscription(BSEC_SAMPLE_RATE_ULP);
+  currentProfile = PROFILE_ULP_300S;
+  currentMode = MODE_IDLE;
 
   // -------------------------------------------------------------------
   // Test 3: Defect 2 Verification (Absolute Magnitude Latch Gate)
@@ -278,9 +279,10 @@ bool runSelectivityDiagnosticTest() {
     logMessage("[DIAG 6/6 FAIL]: BSEC rejected ULP subscription update! Status: " + String((int)bsec->status));
   }
 
-  // Restore operational LP profile for subsequent testing
-  updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
-  currentProfile = PROFILE_LP_3S;
+  // Restore operational ULP profile for subsequent testing
+  updateBsecSubscription(BSEC_SAMPLE_RATE_ULP);
+  currentProfile = PROFILE_ULP_300S;
+  currentMode = MODE_IDLE;
 
   // -------------------------------------------------------------------
   // Summary

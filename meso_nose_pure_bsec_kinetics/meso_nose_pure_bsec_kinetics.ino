@@ -8,13 +8,17 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <NimBLEDevice.h>
-#include "esp_pm.h"
+
 #include "esp_sleep.h"
 #include "bsec2.h"
 #include "sensor_data.h"
 #include "diagnostics.h"
 #include "bsec_iaq.h"
 #include "breath_kinetics_engine.h"
+#include "battery_monitor.h"
+
+#include "hal/usb_serial_jtag_ll.h"
+#include "esp_private/usb_console.h"
 
 const uint8_t bsec_config_iaq[] = {
 #include "./bsec_selectivity.txt"
@@ -30,7 +34,6 @@ const uint8_t bsec_config_iaq[] = {
 } while(0)
 
 // Hardware Pin Assignments
-#define BATTERY_ADC_PIN 2
 #define I2C_SDA 6
 #define I2C_SCL 7
 #define SERVICE_UUID "4fa215f0-0001-4b0e-b682-1a4c70f3a601"
@@ -54,14 +57,6 @@ constexpr uint16_t BLE_ADV_FAST_MAX_INTERVAL_UNITS = 320;
 constexpr uint16_t BLE_ADV_ULP_MIN_INTERVAL_UNITS = 1600;
 constexpr uint16_t BLE_ADV_ULP_MAX_INTERVAL_UNITS = 3200;
 constexpr unsigned long FAST_ADV_BURST_WINDOW_MS = 30000UL;
-
-constexpr uint8_t BATTERY_ADC_SAMPLES = 4;
-constexpr uint8_t BATTERY_ADC_RESOLUTION_BITS = 12;
-constexpr uint32_t BATTERY_SAMPLE_DELAY_MS = 5;
-constexpr float BATTERY_MIN_VOLTS = 3.3f;
-constexpr float BATTERY_MAX_VOLTS = 4.2f;
-constexpr float BATTERY_VALID_LOWER_BOUND_VOLTS = 2.0f;
-constexpr float BATTERY_VOLTAGE_DIVISER_FACTOR = 2.0f;
 constexpr uint32_t BLE_FLUSH_DELAY_MS = 30;
 
 constexpr uint32_t NOTIFY_ULP_INTERVAL_MS = 300000;
@@ -116,6 +111,11 @@ namespace MesoPowerConfig {
   constexpr int CPU_FREQ_MAX_MHZ = 80;
   constexpr int CPU_FREQ_MIN_MHZ = 10;
   constexpr bool ENABLE_AUTOMATIC_LIGHT_SLEEP = true;
+  
+  // Timed light sleep duration during idle (20ms) 
+  constexpr uint64_t IDLE_LIGHT_SLEEP_DURATION_US = 20000ULL; // 20 
+  constexpr uint32_t BOOT_STABILIZATION_GRACE_MS    = 5000UL;   // 5s grace window
+  constexpr uint32_t BLE_HANDSHAKE_STABILIZATION_MS = 5000UL;   // 5s window for GATT discovery
 }
 
 namespace MesoPowerLogs {
@@ -127,6 +127,7 @@ namespace MesoPowerLogs {
   constexpr const char *BSEC_SUB_FAIL         = "[BSEC ERROR]: updateSubscription failed: ";
   constexpr const char *CPU_FREQ_CONFIG_SUCCESS = "[POWER]: CPU clock scaled down to 80 MHz (Low Power Mode).";
   constexpr const char *CPU_FREQ_CONFIG_FAIL    = "[POWER ERROR]: Failed to adjust CPU clock frequency.";
+  constexpr const char *LIGHT_SLEEP_ENGINE_ACTIVE = "[POWER]: Explicit Timed Light Sleep active (20ms ticks).";
 }
 
 namespace BleConnParams {
@@ -145,6 +146,9 @@ namespace MesoLogStrings {
   constexpr const char *LOG_BSEC_INIT_SUCCESS     = "[BSEC INIT]: Engine Initialized & Resting in ULP Mode.";
   constexpr const char *LOG_BSEC_INIT_FAIL        = "[BSEC ERROR]: BSEC Initialization Failed!";
 }
+
+unsigned long connectionEstablishedTimeMs = 0;
+bool connectionParamsUpdated = false;
 
 bool systemReady = false;
 enum OperationMode { MODE_IDLE, MODE_BREATH_TEST, MODE_DIAGNOSTIC };
@@ -502,6 +506,7 @@ void runBreathSequence() {
   if (!prepareAndCaptureBaseline(baseRes, baseHumidity, baseTemp)) {
     logMessage("[SEQUENCE ABORTED]: Baseline capture failed!");
     resetToULP();
+    currentMode = MODE_IDLE; // Added clean state reset
     return;
   }
 
@@ -533,18 +538,6 @@ void executeDiagnosticSequence() {
   runSelectivityDiagnosticTest();
   currentMode = MODE_IDLE;
   logMessage("[DIAG COMPLETE]: Self-test sequence finished.");
-}
-
-uint8_t readBatteryPercentage() {
-  uint32_t totalMv = 0;
-  for (int i = 0; i < BATTERY_ADC_SAMPLES; i++) {
-    totalMv += analogReadMilliVolts(BATTERY_ADC_PIN);
-    vTaskDelay(pdMS_TO_TICKS(BATTERY_SAMPLE_DELAY_MS));
-  }
-  float voltage = (((float)totalMv / BATTERY_ADC_SAMPLES) / 1000.0f) * BATTERY_VOLTAGE_DIVISER_FACTOR;
-  if (voltage < BATTERY_VALID_LOWER_BOUND_VOLTS || voltage >= BATTERY_MAX_VOLTS) return 100;
-  if (voltage <= BATTERY_MIN_VOLTS) return 0;
-  return (uint8_t)(((voltage - BATTERY_MIN_VOLTS) / (BATTERY_MAX_VOLTS - BATTERY_MIN_VOLTS)) * 100.0f);
 }
 
 void saveOfflineData() {
@@ -662,29 +655,27 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) override { 
     deviceConnected = true; 
     pendingFlush = true; 
+    connectionEstablishedTimeMs = millis();
+    connectionParamsUpdated = false;
 
-    pServer->updateConnParams(
-      connInfo.getConnHandle(),
-      BleConnParams::BLE_CONN_MIN_INTERVAL_UNITS,
-      BleConnParams::BLE_CONN_MAX_INTERVAL_UNITS,
-      BleConnParams::BLE_CONN_SLAVE_LATENCY,
-      BleConnParams::BLE_CONN_SUPERVISION_TIMEOUT_UNITS
-    );
-    logMessage(String(MesoLogStrings::LOG_BLE_CONN_UPDATE_REQ));
+    logMessage(F("[BLE CONNECT]: Central connected. Fast GATT discovery window active."));
     
     if (bsec != nullptr && currentMode != MODE_BREATH_TEST) {
       resetToULP();
       logMessage(String(MesoLogStrings::LOG_BLE_RESTORE_ULP));
       
-      // Dispatch immediate cached reading so iOS UI unlocks without forcing LP mode
       if (sensorData.currentGasRes > 0.0f || sensorData.currentTemp != 0.0f) {
-        sensorData.batteryPct = readBatteryPercentage();
+        float measuredVoltage = 0.0f;
+        sensorData.batteryPct = BatteryMonitor::readPercentageAndVoltage(measuredVoltage);
         dispatchData(sensorData.toJsonString());
       }
     }
   }
-  void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) { 
+
+  void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) override { 
     deviceConnected = false; 
+    connectionEstablishedTimeMs = 0;
+    connectionParamsUpdated = false;
     adjustAdvertisingPower(true);
   }
 };
@@ -701,7 +692,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 void adjustAdvertisingPower(bool newlyDisconnected) {
-  static unsigned long disconnectTime = 0;
+  static unsigned long disconnectTime = millis();
   static bool isInLowPowerAdvertising = false;
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
 
@@ -712,7 +703,7 @@ void adjustAdvertisingPower(bool newlyDisconnected) {
     pAdvertising->setMinInterval(BLE_ADV_FAST_MIN_INTERVAL_UNITS);
     pAdvertising->setMaxInterval(BLE_ADV_FAST_MAX_INTERVAL_UNITS);
     pAdvertising->start();
-    logMessage("[BLE ADV]: Fast Advertising Started (30s window).");
+    logMessage(F("[BLE ADV]: Fast Advertising Started (30s window)."));
   } else if (!deviceConnected) {
     if (!isInLowPowerAdvertising && ((millis() - disconnectTime) > FAST_ADV_BURST_WINDOW_MS)) {
       isInLowPowerAdvertising = true;
@@ -720,7 +711,7 @@ void adjustAdvertisingPower(bool newlyDisconnected) {
       pAdvertising->setMinInterval(BLE_ADV_ULP_MIN_INTERVAL_UNITS);
       pAdvertising->setMaxInterval(BLE_ADV_ULP_MAX_INTERVAL_UNITS);
       pAdvertising->start();
-      logMessage("[BLE ADV]: Transitioned to Ultra Low Power Advertising.");
+      logMessage(F("[BLE ADV]: Transitioned to Low Power Advertising."));
     } else if (!pAdvertising->isAdvertising()) {
       pAdvertising->start();
     }
@@ -751,55 +742,57 @@ void processSerialInput() {
 }
 
 void setup() {
-  Serial.begin(SERIAL_BAUD_RATE); 
-  delay(2000);
+  Serial.begin(SERIAL_BAUD_RATE);
   
-  logMessage("[SYS INIT]: Firmware Booting (Meso Nose Pure BSEC Kinetics)");
-  
-  pinMode(BATTERY_ADC_PIN, INPUT); 
-  analogReadResolution(BATTERY_ADC_RESOLUTION_BITS); 
-  analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
-
-  if (setCpuFrequencyMhz(MesoPowerConfig::CPU_LOW_POWER_FREQ_MHZ)) {
-    logMessage(String(MesoPowerLogs::CPU_FREQ_CONFIG_SUCCESS));
-  } else {
-    logMessage(String(MesoPowerLogs::CPU_FREQ_CONFIG_FAIL));
+  // Wait up to 2500ms for USB host to enumerate endpoints
+  const uint32_t usbStartMs = millis();
+  while (!usb_serial_jtag_ll_txfifo_writable() && ((millis() - usbStartMs) < 2500UL)) {
+    delay(10);
   }
+  delay(200); // Terminal visual settle
 
-  esp_pm_config_esp32_t pmConfig = {
-    .max_freq_mhz = MesoPowerConfig::CPU_FREQ_MAX_MHZ,
-    .min_freq_mhz = MesoPowerConfig::CPU_FREQ_MIN_MHZ,
-    .light_sleep_enable = MesoPowerConfig::ENABLE_AUTOMATIC_LIGHT_SLEEP
-  };
-  esp_err_t pmResult = esp_pm_configure(&pmConfig);
-  if (pmResult == ESP_OK) {
-    logMessage(String(MesoPowerLogs::PM_LIGHT_SLEEP_ACTIVE));
-  } else {
-    logMessage(String(MesoPowerLogs::PM_INIT_FAILED));
-  }
+  logMessage(F("[SYS INIT]: Firmware Booting (Meso Nose Pure BSEC Kinetics)"));
 
-  
+  BatteryMonitor::init();
+
   if (!LittleFS.begin(true, LITTLEFS_MOUNT_POINT, 10, "spiffs")) {
-    logMessage("[LITTLEFS WARN]: Mount failed. Formatting LittleFS partition...");
+    logMessage(F("[LITTLEFS WARN]: Mount failed. Formatting LittleFS partition..."));
     LittleFS.format();
     LittleFS.begin(true, LITTLEFS_MOUNT_POINT, 10, "spiffs");
   }
 
+  // Initialize NimBLE Radio at full bus speed
   NimBLEDevice::init(Device_Name.c_str());
   pServer = NimBLEDevice::createServer(); 
   pServer->setCallbacks(new ServerCallbacks());
   NimBLEService *pService = pServer->createService(SERVICE_UUID);
-  pCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
+  pCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID, 
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY
+  );
   pCharacteristic->setCallbacks(new CharacteristicCallbacks());
   pService->start(); 
   
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
-  pAdvertising->setName(Device_Name.c_str());
-  pAdvertising->addServiceUUID(SERVICE_UUID);
+
+  // Primary Advertisement Data: Flags & 128-bit Service UUID
+  NimBLEAdvertisementData advData;
+  advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+  advData.setCompleteServices(NimBLEUUID(SERVICE_UUID));
+  pAdvertising->setAdvertisementData(advData);
+
+  // Scan Response Data: Complete Local Name (guarantees iOS discovery on scan)
+  NimBLEAdvertisementData scanRespData;
+  scanRespData.setName(Device_Name.c_str());
+  pAdvertising->setScanResponseData(scanRespData);
+
+  pAdvertising->setMinInterval(BLE_ADV_FAST_MIN_INTERVAL_UNITS);
+  pAdvertising->setMaxInterval(BLE_ADV_FAST_MAX_INTERVAL_UNITS);
   pAdvertising->start();
 
   logMessage("[BLE ADV]: Active BLE Advertising Broadcast under name: " + Device_Name);
 
+  // Initialize I2C and BSEC at full bus speed
   Wire.begin(I2C_SDA, I2C_SCL); 
   Wire.setClock(I2C_CLOCK_SPEED_HZ); 
   Wire.setTimeOut(I2C_BUS_TIMEOUT_MS);
@@ -809,7 +802,6 @@ void setup() {
     if (!bsec->setConfig(bsec_config_iaq)) {
       logMessage(String(MesoLogStrings::LOG_BSEC_CONFIG_WARN) + String(bsec->status) + ")");
     }
-    
     bsecReady = true; 
     bsec->attachCallback(newDataCallback);
     resetToULP();
@@ -817,8 +809,22 @@ void setup() {
   } else {
     logMessage(String(MesoLogStrings::LOG_BSEC_INIT_FAIL));
   }
+
+  // Scale down CPU clock only when untethered from USB
+  const bool isUsbConnected = usb_serial_jtag_ll_txfifo_writable() || BatteryMonitor::isCharging();
+  if (!isUsbConnected) {
+    if (setCpuFrequencyMhz(MesoPowerConfig::CPU_LOW_POWER_FREQ_MHZ)) {
+      logMessage(String(MesoPowerLogs::CPU_FREQ_CONFIG_SUCCESS));
+    } else {
+      logMessage(String(MesoPowerLogs::CPU_FREQ_CONFIG_FAIL));
+    }
+  } else {
+    logMessage(F("[POWER]: USB-CDC Active. Maintaining 160 MHz for diagnostics."));
+  }
+
+  logMessage(String(MesoPowerLogs::LIGHT_SLEEP_ENGINE_ACTIVE));
   systemReady = true;
-  logMessage("[SYS READY]: System Ready. Listening for BLE/Serial commands...");
+  logMessage(F("[SYS READY]: System Ready. Listening for BLE/Serial commands..."));
 }
 
 void loop() {
@@ -831,7 +837,22 @@ void loop() {
   if (pendingDiagCommand) { pendingDiagCommand = false; executeDiagnosticSequence(); return; }
   if (pendingBreathCommand) { pendingBreathCommand = false; runBreathSequence(); return; }
 
-  // Protected execution block
+  // 1. Deferred Low-Power Connection Parameter Negotiation
+  if (deviceConnected && !connectionParamsUpdated && 
+      ((millis() - connectionEstablishedTimeMs) >= MesoPowerConfig::BLE_HANDSHAKE_STABILIZATION_MS)) {
+    connectionParamsUpdated = true;
+    NimBLEConnInfo connInfo = pServer->getPeerInfo(0);
+    pServer->updateConnParams(
+      connInfo.getConnHandle(),
+      BleConnParams::BLE_CONN_MIN_INTERVAL_UNITS,
+      BleConnParams::BLE_CONN_MAX_INTERVAL_UNITS,
+      BleConnParams::BLE_CONN_SLAVE_LATENCY,
+      BleConnParams::BLE_CONN_SUPERVISION_TIMEOUT_UNITS
+    );
+    logMessage(String(MesoLogStrings::LOG_BLE_CONN_UPDATE_REQ));
+  }
+
+  // Protected BSEC execution block
   if (bsecReady && bsec != nullptr && bsec->status >= BSEC_OK && currentProfile != PROFILE_OFF && currentMode == MODE_IDLE) {
     bsec->run();
     
@@ -843,11 +864,44 @@ void loop() {
     if ((millis() - lastNotifyTime) >= activeNotifyInterval) {
       lastNotifyTime = millis();
       if (sensorData.currentGasRes > 0.0f || sensorData.currentTemp != 0.0f) {
-        sensorData.batteryPct = readBatteryPercentage();
+        float measuredVoltage = 0.0f;
+        sensorData.batteryPct = BatteryMonitor::readPercentageAndVoltage(measuredVoltage);
+
+        logMessage("[BATT DIAG]: Measured Cell Voltage: " + String(measuredVoltage, 3) + 
+                   " V | SoC: " + String(sensorData.batteryPct) + " %");
         dispatchData(sensorData.toJsonString());
       }
     }
   }
-  Serial.flush();
-  vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
+  
+  const bool isBootGraceActive = (millis() < MesoPowerConfig::BOOT_STABILIZATION_GRACE_MS);
+  
+  // Hardware-level USB Connection Detection:
+  // Detects physical USB cable connection regardless of battery charge state or Mac DTR status
+  const bool isUsbTethered = usb_serial_jtag_ll_txfifo_writable() || 
+                             BatteryMonitor::isCharging() || 
+                             (bool)Serial;
+
+  // Guard GATT discovery during the initial 5-second handshake window
+  const bool isBleHandshaking = deviceConnected && 
+    ((millis() - connectionEstablishedTimeMs) < MesoPowerConfig::BLE_HANDSHAKE_STABILIZATION_MS);
+
+  // True Low Power: Engages untethered on battery outside active sensing/handshake windows
+  if (!isBootGraceActive && !isUsbTethered && !isBleHandshaking &&
+      currentMode == MODE_IDLE && !hasPendingCommand && !pendingBreathCommand && !pendingDiagCommand) {
+    
+    esp_err_t timerErr = esp_sleep_enable_timer_wakeup(MesoPowerConfig::IDLE_LIGHT_SLEEP_DURATION_US);
+    
+    if (timerErr == ESP_OK) {
+      esp_err_t sleepErr = esp_light_sleep_start();
+      if (sleepErr != ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
+      }
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
+    }
+  } else {
+    // Keep FreeRTOS scheduler servicing USB-CDC and BLE when tethered or during handshakes
+    vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
+  }
 }
