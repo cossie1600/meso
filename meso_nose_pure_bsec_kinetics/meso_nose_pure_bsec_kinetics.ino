@@ -116,6 +116,12 @@ namespace MesoPowerConfig {
   constexpr uint64_t IDLE_LIGHT_SLEEP_DURATION_US = 20000ULL; // 20 
   constexpr uint32_t BOOT_STABILIZATION_GRACE_MS    = 5000UL;   // 5s grace window
   constexpr uint32_t BLE_HANDSHAKE_STABILIZATION_MS = 5000UL;   // 5s window for GATT discovery
+  
+  // Battery Supervision Safety Thresholds (Zero Magic Numbers)
+  constexpr float MIN_DETECTED_CELL_VOLTAGE_VOLTS     = 1.50f; // Readings below 1.5V indicate missing battery or floating ADC
+  constexpr float CRITICAL_LOW_BATTERY_SHUTDOWN_VOLTS = 3.10f; // Cutoff before LDO brownout occurs
+  constexpr uint32_t BATT_SUPERVISION_INTERVAL_MS     = 10000UL; // Check voltage every 10 seconds during idle
+  constexpr uint32_t BLE_TEARDOWN_DRAIN_DELAY_MS      = 150UL;   // Allow final alert packet to clear radio buffers
 }
 
 namespace MesoPowerLogs {
@@ -145,6 +151,7 @@ namespace MesoLogStrings {
   constexpr const char *LOG_BSEC_CONFIG_WARN      = "[BSEC WARN]: Custom setConfig failed (Code: ";
   constexpr const char *LOG_BSEC_INIT_SUCCESS     = "[BSEC INIT]: Engine Initialized & Resting in ULP Mode.";
   constexpr const char *LOG_BSEC_INIT_FAIL        = "[BSEC ERROR]: BSEC Initialization Failed!";
+  constexpr const char *LOG_BATT_CRITICAL_CUTOFF  = "[POWER ERROR]: Battery depleted below cutoff threshold. Entering deep sleep.";
 }
 
 unsigned long connectionEstablishedTimeMs = 0;
@@ -492,6 +499,10 @@ void processBreathTestResults(float baseRes, float minRes, float maxDeltaHumidit
   float deltaDrop = (baseRes > 0.0f) ? (((baseRes - minRes) / baseRes) * 100.0f) : 0.0f;
   if (deltaDrop < 0.0f) deltaDrop = 0.0f;
 
+  // Populate battery percentage on breath test completion
+  float currentCellVoltage = 0.0f;
+  sensorData.batteryPct = BatteryMonitor::readPercentageAndVoltage(currentCellVoltage);
+
   sensorData.currentGasRes = minRes;
   sensorData.deltaDrop = deltaDrop;
   sensorData.rBreathMin = (long)minRes;
@@ -760,6 +771,37 @@ void processSerialInput() {
   }
 }
 
+bool checkAndEnforceBatterySafety(bool isUsbTethered) {
+  // Never shut down the device if it is powered or actively charging via USB
+  if (isUsbTethered) {
+    return false;
+  }
+
+  float cellVoltage = 0.0f;
+  uint8_t soc = BatteryMonitor::readPercentageAndVoltage(cellVoltage);
+
+  // If cell voltage is between 1.5V and 3.10V, it is a genuine exhausted LiPo cell
+  if (cellVoltage >= MesoPowerConfig::MIN_DETECTED_CELL_VOLTAGE_VOLTS && 
+      cellVoltage < MesoPowerConfig::CRITICAL_LOW_BATTERY_SHUTDOWN_VOLTS) {
+    
+    logMessage(String(MesoLogStrings::LOG_BATT_CRITICAL_CUTOFF) + " (" + String(cellVoltage, 2) + " V | SoC: " + String(soc) + "%)");
+    
+    // Notify connected Central before radio shutdown
+    dispatchData("{\"error\":\"BATTERY_CRITICALLY_LOW\",\"voltage\":" + String(cellVoltage, 2) + ",\"soc\":" + String(soc) + "}");
+    
+    vTaskDelay(pdMS_TO_TICKS(MesoPowerConfig::BLE_TEARDOWN_DRAIN_DELAY_MS));
+    
+    if (NimBLEDevice::isInitialized()) {
+      NimBLEDevice::deinit(true);
+    }
+    
+    esp_deep_sleep_start();
+    return true;
+  }
+
+  return false;
+}
+
 void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
   
@@ -900,6 +942,18 @@ void loop() {
   const bool isUsbTethered = usb_serial_jtag_ll_txfifo_writable() || 
                              BatteryMonitor::isCharging() || 
                              (bool)Serial;
+
+  // Periodic battery supervision: rate-limited to avoid bus/ADC thrashing
+  static unsigned long lastBatteryCheckTimeMs = 0;
+  if ((millis() - lastBatteryCheckTimeMs) >= MesoPowerConfig::BATT_SUPERVISION_INTERVAL_MS) {
+    lastBatteryCheckTimeMs = millis();
+    checkAndEnforceBatterySafety(isUsbTethered);
+  }
+
+  if (hasPendingCommand) { hasPendingCommand = false; handleCommand(String(pendingCmdBuf)); }
+  if (pendingFlush && deviceConnected) { pendingFlush = false; flushOfflineData(); }
+  if (pendingDiagCommand) { pendingDiagCommand = false; executeDiagnosticSequence(); return; }
+  if (pendingBreathCommand) { pendingBreathCommand = false; runBreathSequence(); return; }
 
   // Guard GATT discovery during the initial 5-second handshake window
   const bool isBleHandshaking = deviceConnected && 
