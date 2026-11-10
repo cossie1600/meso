@@ -14,6 +14,8 @@ struct MesoNoseConstants {
     static let zeroFloat: Float = 0.0
     static let zeroDouble: Double = 0.0
     static let zeroInt: Int = 0
+    static let minValidBatteryPercent: Int = 0
+    static let maxValidBatteryPercent: Int = 100
     static let secondsPerMinute: Int = 60
     // Transient cold-boot heating floor (near-zero short circuits < 1000 ohms)
     static let transientWarmupVocFloor: Int = 1_000
@@ -474,9 +476,10 @@ extension BluetoothManager {
 
             AppLogger.writeLog("[TRACE]: Ingesting MesoNose Packet -> \(text)")
 
+            // Replace the previous battery parsing block:
             if let sample = MesoNoseSample(jsonString: text),
-                let bat = sample.battery, bat > MesoNoseConstants.zeroInt
-            {
+               let bat = sample.battery,
+               bat >= MesoNoseConstants.minValidBatteryPercent && bat <= MesoNoseConstants.maxValidBatteryPercent {
                 self.mesoNoseBattery = bat
             }
 

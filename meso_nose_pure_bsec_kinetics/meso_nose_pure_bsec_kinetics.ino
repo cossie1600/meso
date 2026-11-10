@@ -422,33 +422,52 @@ void captureBreathSensingWindow(float baseRes, float baseHumidity,
   logMessage("[SENSING COMPLETE]: Final R_min=" + String((long)outMinRes) + " Ohm");
 }
 
-void captureRecoveryWindow(float minRes, float baseRes, float &outRecoveryLag) {
-  dispatchData("{\"state\":\"RECOVERING_CALCULATING_T50\"}");
+// ============================================================================
+// DYNAMIC KINETICS & BREATH SEQUENCE PIPELINE
+// ============================================================================
+
+void captureUnifiedBreathKinetics(float baseRes, float baseHumidity, 
+                                  float &inOutMinRes, float &inOutMaxDeltaRH, 
+                                  float &outRecoveryLag) {
+  dispatchData("{\"state\":\"" + String(STATE_TESTING_SENSING_BREATH) + "\"}");
   
-  float target50 = minRes + T50_CALCULATION_FACTOR * (baseRes - minRes);
-  outRecoveryLag = SensorConstants::RECOVERY_LAG_TIMEOUT_SEC; 
+  // Dynamic 50% target calculated from initial exhalation nadir
+  float target50 = inOutMinRes + (T50_CALCULATION_FACTOR * (baseRes - inOutMinRes));
+  outRecoveryLag = SensorConstants::RECOVERY_LAG_TIMEOUT_SEC;
   
-  logMessage("[KINETICS T50 START]: R_base=" + String((long)baseRes) + 
-              " Ohm | R_min=" + String((long)minRes) + 
-              " Ohm | Target R_50%=" + String((long)target50) + " Ohm");
-  
-  uint32_t startMs = millis();
-  while ((millis() - startMs) < RECOVERY_SENSING_WINDOW_MS) {
-    float rGas = 0.0f;
-    if (readBsecFrame(rGas)) {
-      VERBOSE_LOG("[T50 RECOVERY PURGE]: R_current=" + String((long)rGas) + 
-                  " Ohm | Target R_50%=" + String((long)target50) + " Ohm");
-      if (rGas >= target50) {
-        outRecoveryLag = (millis() - startMs) / MILLISECONDS_TO_SECONDS_CONVERSION;
-        logMessage("[T50 RECOVERY TARGET MET]: Reached 50% baseline recovery at " + String(outRecoveryLag, 2) + "s!");
-        break;
+  const uint32_t windowStartMs = millis();
+  uint32_t nadirTimestampMs = millis();
+  bool isAscending = false;
+
+  while ((millis() - windowStartMs) < RECOVERY_SENSING_WINDOW_MS) {
+    float currentGasRes = 0.0f;
+    if (readBsecFrame(currentGasRes)) {
+      const float deltaRH = sensorData.currentHumidity - baseHumidity;
+      if (deltaRH > inOutMaxDeltaRH) {
+        inOutMaxDeltaRH = deltaRH;
+      }
+
+      // Track deeper nadir if exhalation is continuing
+      if (currentGasRes > HW_MIN_SENSOR_GAS_RES && currentGasRes < inOutMinRes) {
+        inOutMinRes = currentGasRes;
+        nadirTimestampMs = millis();
+        target50 = inOutMinRes + (T50_CALCULATION_FACTOR * (baseRes - inOutMinRes));
+      } else if (currentGasRes > inOutMinRes && !isAscending) {
+        isAscending = true;
+        dispatchData("{\"state\":\"RECOVERING_CALCULATING_T50\"}");
+      }
+
+      // T50 Desorption point reached
+      if (isAscending && currentGasRes >= target50) {
+        outRecoveryLag = static_cast<float>(millis() - nadirTimestampMs) / MILLISECONDS_TO_SECONDS_CONVERSION;
+        logMessage("[T50 RECOVERY TARGET MET]: Reached 50% recovery in " + String(outRecoveryLag, 2) + "s");
+        return;
       }
     }
     vTaskDelay(pdMS_TO_TICKS(POLL_TICK_DELAY_MS));
   }
-  if (outRecoveryLag >= SensorConstants::RECOVERY_LAG_TIMEOUT_SEC) {
-    logMessage("[T50 RECOVERY TIMEOUT]: Gas sensor failed to reach 50% recovery target within window. Defaulting lag to " + String(outRecoveryLag, 1) + "s.");
-  }
+
+  logMessage(F("[T50 TIMEOUT]: Sensor did not reach target50 within recovery window."));
 }
 
 String evaluateBreathResultWrapper(float deltaDrop, float maxDeltaHumidity, float recoveryLagSec) {
@@ -512,8 +531,8 @@ void runBreathSequence() {
 
   float minRes = baseRes;
   if (waitForBreathExhalation(baseRes, baseHumidity, baseTemp, minRes, maxDeltaRH)) {
-    captureBreathSensingWindow(baseRes, baseHumidity, minRes, maxDeltaRH);
-    captureRecoveryWindow(minRes, baseRes, recoveryLag);
+    // Single, clean dynamic kinetics pass (removes redundant captureRecoveryWindow call)
+    captureUnifiedBreathKinetics(baseRes, baseHumidity, minRes, maxDeltaRH, recoveryLag);
     processBreathTestResults(baseRes, minRes, maxDeltaRH, recoveryLag);
   } else {
     const bool isWeakExhalationDetected = (maxDeltaRH >= PARTIAL_EXHALATION_MIN_DELTA_RH_PCT);

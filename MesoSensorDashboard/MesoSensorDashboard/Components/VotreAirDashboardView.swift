@@ -60,6 +60,26 @@ struct VotreAirDashboardView: View {
         default: return "battery.25"
         }
     }
+    
+    private var batteryState: BatteryDisplayState {
+        guard bleManager.isConnected else {
+            return .unknown
+        }
+
+        // Use live telemetry percentage if available, otherwise check stored samples
+        let rawBattery = bleManager.mesoNoseBattery ?? latestSample?.battery
+
+        guard let battery = rawBattery else {
+            return .unknown
+        }
+
+        // 0% when plugged into USB indicates a floating or unpopulated cell terminal (0.63V bias)
+        if battery == MesoNoseConstants.zeroInt && !bleManager.hasReceivedLiveTelemetry {
+            return .externalPower
+        }
+
+        return .battery(level: battery)
+    }
 
     private var allBreathSamples: [MesoNoseSample] {
         var uniqueSamples: [MesoNoseSample] = []
@@ -91,8 +111,9 @@ struct VotreAirDashboardView: View {
                     VotreAirHeaderView(
                         temperatureText: formattedTemperature,
                         humidityText: formattedHumidity,
-                        batteryLevel: currentBatteryLevel,
-                        batteryIconName: batteryIconName
+                        batteryText: batteryState.text,
+                        batteryIconName: batteryState.iconName,
+                        batteryColor: batteryState.iconColor
                     )
 
                     // Translucent Action Card
@@ -154,6 +175,55 @@ struct VotreAirDashboardView: View {
                     }
                 }
             }
+        }
+    }
+}
+// MARK: - Battery Presentation State
+enum BatteryDisplayState {
+    case battery(level: Int)
+    case externalPower
+    case unknown
+
+    var text: String {
+        switch self {
+        case .battery(let level):
+            return "\(level)%"
+        case .externalPower:
+            return "USB"
+        case .unknown:
+            return "--%"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .externalPower:
+            return "bolt.fill"
+        case .unknown:
+            return "battery.slash"
+        case .battery(let level):
+            switch level {
+            case 75...100: return "battery.100"
+            case 50..<75:  return "battery.75"
+            case 25..<50:  return "battery.50"
+            default:       return "battery.25"
+            }
+        }
+    }
+
+    var iconColor: Color {
+        switch self {
+        case .externalPower:
+            return Color.yellow
+        case .unknown:
+            return Color.appSecondaryText
+        case .battery(let level):
+            if level <= 15 {
+                return Color.red
+            } else if level <= 30 {
+                return Color.orange
+            }
+            return Color.appSecondaryText
         }
     }
 }

@@ -8,8 +8,9 @@ import SwiftUI
 struct VotreAirHeaderView: View {
     let temperatureText: String
     let humidityText: String
-    let batteryLevel: Int
+    let batteryText: String
     let batteryIconName: String
+    let batteryColor: Color
 
     private struct UIConstants {
         static let titleText = "Votre Air"
@@ -25,17 +26,12 @@ struct VotreAirHeaderView: View {
         static let telemetryHStackSpacing: CGFloat = 5.0
         static let minimumScaleFactorRatio: CGFloat = 0.80
         static let singleLineLimit: Int = 1
-
-        static func formattedBatteryText(_ level: Int) -> String {
-            "\(level)%"
-        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: UIConstants.headerVStackSpacing) {
             // Title Row: [Icon] + [Votre Air] + [Spacer] + [Settings Icon]
             HStack(alignment: .center, spacing: UIConstants.titleHStackSpacing) {
-                // Alchemist A Emblem on Left Side of Title
                 Image("alchemistA")
                     .resizable()
                     .scaledToFit()
@@ -56,7 +52,6 @@ struct VotreAirHeaderView: View {
 
                 Spacer()
 
-                // Top-Right Settings Gear Link
                 NavigationLink(destination: SettingsView()) {
                     Image(systemName: "gearshape.fill")
                         .font(.system(size: 18, weight: .semibold))
@@ -76,10 +71,8 @@ struct VotreAirHeaderView: View {
                 Text(UIConstants.separatorText)
                     .foregroundColor(Color.appSecondaryText)
 
-                Label(
-                    UIConstants.formattedBatteryText(batteryLevel),
-                    systemImage: batteryIconName
-                )
+                Label(batteryText, systemImage: batteryIconName)
+                    .foregroundColor(batteryColor)
             }
             .font(
                 .system(
