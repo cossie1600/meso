@@ -49,93 +49,123 @@ extension BluetoothManager: CBCentralManagerDelegate {
     // BluetoothManager+CentralManager.swift
 
     func centralManager(
-        _ central: CBCentralManager,
-        didDiscover peripheral: CBPeripheral,
-        advertisementData: [String: Any],
-        rssi RSSI: NSNumber
-    ) {
-        let deviceName = peripheral.name
-            ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
-            ?? BMConstants.defaultUnnamedLocalDevice
-        let deviceID = peripheral.identifier
-
-        // Service UUID inspection catches unnamed/truncated advertising packets
-        let advertisedServiceUUIDs = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID])?.map { $0.uuidString.lowercased() } ?? []
-        let targetServiceUUID = AppConfig.mesoNoseServiceUUIDString.lowercased()
-        let hasTargetService = advertisedServiceUUIDs.contains(targetServiceUUID)
-
-        let isMesoPin = deviceName.hasPrefix(AppConfig.bluetoothDeviceName)
-        let isMesoNoseName = deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName) || hasTargetService
-        let isSavedMesoNose = (savedMesoNoseUUID == deviceID)
-
-        guard isMesoPin || isMesoNoseName || isSavedMesoNose else { return }
-
-        if let existing = connectedPeripherals[deviceID], existing.state == .connected || existing.state == .connecting {
-            return
-        }
-
-        // Active Pairing Scan: Connect to nearby Meso Nose meeting proximity RSSI
-        if isPairingModeActive && isMesoNoseName {
-            guard RSSI.intValue != BMConstants.invalidRSSI && RSSI.intValue >= BMConstants.proximityRSSIThreshold else { return }
-
-            if savedMesoNoseUUID != deviceID {
-                AppLogger.writeLog(BMLogMessages.updatedSavedMesoNoseUUID(deviceID))
-                self.savedMesoNoseUUID = deviceID
+            _ central: CBCentralManager,
+            didDiscover peripheral: CBPeripheral,
+            advertisementData: [String: Any],
+            rssi RSSI: NSNumber
+        ) {
+            let deviceName = peripheral.name
+                ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
+                ?? BMConstants.defaultUnnamedLocalDevice
+            let deviceID = peripheral.identifier
+            
+            guard RSSI.intValue != BMConstants.invalidRSSI && RSSI.intValue >= BMConstants.proximityRSSIThreshold else {
+                AppLogger.writeLog("[BLE SCAN]: Spotted \(deviceName) (\(deviceID)) with weak RSSI \(RSSI) dBm.")
+                return
             }
             
-            AppLogger.writeLog(BMLogMessages.pairingMatchFound(deviceName, deviceID, RSSI))
-            connectToPeripheral(peripheral, deviceName: deviceName)
-            return
+            let advertisedServiceUUIDs = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID])?.map { $0.uuidString.lowercased() } ?? []
+            let targetServiceUUID = AppConfig.mesoNoseServiceUUIDString.lowercased()
+            let hasTargetService = advertisedServiceUUIDs.contains(targetServiceUUID)
+
+            let isMesoPin = deviceName.hasPrefix(AppConfig.bluetoothDeviceName)
+            let isMesoNoseName = deviceName.hasPrefix(AppConfig.mesoNoseBluetoothName) || hasTargetService
+            let isSavedMesoNose = (savedMesoNoseUUID == deviceID)
+
+            guard isMesoPin || isMesoNoseName || isSavedMesoNose else { return }
+
+            if let existing = connectedPeripherals[deviceID], existing.state == .connected || existing.state == .connecting {
+                return
+            }
+
+            // 1. Sticky Reconnect to previously saved peripheral
+            if isSavedMesoNose {
+                AppLogger.writeLog(BMLogMessages.targetMatchFound(deviceName, deviceID))
+                connectToPeripheral(peripheral, deviceName: deviceName)
+                return
+            }
+
+            // 2. Active Pairing OR Automatic First-Time Proximity Pairing
+            if isMesoNoseName && (isPairingModeActive || savedMesoNoseUUID == nil) {
+                guard RSSI.intValue != BMConstants.invalidRSSI && RSSI.intValue >= BMConstants.proximityRSSIThreshold else { return }
+
+                if savedMesoNoseUUID != deviceID {
+                    AppLogger.writeLog(BMLogMessages.updatedSavedMesoNoseUUID(deviceID))
+                    self.savedMesoNoseUUID = deviceID
+                }
+
+                AppLogger.writeLog(BMLogMessages.pairingMatchFound(deviceName, deviceID, RSSI))
+                connectToPeripheral(peripheral, deviceName: deviceName)
+                return
+            }
+            
         }
 
-        // Sticky Reconnect: Connect directly to saved peripheral
-        if isSavedMesoNose {
-            AppLogger.writeLog(BMLogMessages.targetMatchFound(deviceName, deviceID))
-            connectToPeripheral(peripheral, deviceName: deviceName)
-            return
-        }
-    }
+        func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+            connectionTimeoutTimer?.invalidate()
+            connectionTimeoutTimer = nil
 
-    func centralManager(
-        _ central: CBCentralManager,
-        didConnect peripheral: CBPeripheral
-    ) {
-        let deviceName = peripheral.name ?? BMConstants.defaultUnknownDevice
-        AppLogger.writeLog(BMLogMessages.connectedTo(deviceName))
+            let deviceName = peripheral.name ?? BMConstants.defaultUnknownDevice
+            AppLogger.writeLog(BMLogMessages.connectedTo(deviceName))
 
-        // Reset active pairing flag upon successful connection
-        self.isPairingModeActive = false
+            self.isPairingModeActive = false
+            peripheral.delegate = self
+            incomingBuffers[peripheral.identifier] = BMConstants.emptyString
+            peripheral.discoverServices(nil)
 
-        peripheral.delegate = self
-        incomingBuffers[peripheral.identifier] = BMConstants.emptyString
-        peripheral.discoverServices(nil)
+            DispatchQueue.main.async {
+                let count = self.connectedPeripherals.count
+                self.statusText = BMConstants.statusConnectedDevicesCount(count)
+            }
 
-        DispatchQueue.main.async {
-            let count = self.connectedPeripherals.count
-            self.statusText = BMConstants.statusConnectedDevicesCount(count)
+            startScanning()
         }
 
-        startScanning()
-    }
+        func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+            connectionTimeoutTimer?.invalidate()
+            connectionTimeoutTimer = nil
 
-    func centralManager(
-        _ central: CBCentralManager,
-        didFailToConnect peripheral: CBPeripheral,
-        error: Error?
-    ) {
-        let errorDescription =
-            error?.localizedDescription ?? BMConstants.defaultUnknownDevice
-        let deviceName = peripheral.name ?? BMConstants.defaultDeviceName
-        AppLogger.writeLog(
-            BMLogMessages.failedToConnect(deviceName, errorDescription)
-        )
+            let errorDescription = error?.localizedDescription ?? BMConstants.defaultUnknownDevice
+            let deviceName = peripheral.name ?? BMConstants.defaultDeviceName
+            AppLogger.writeLog(BMLogMessages.failedToConnect(deviceName, errorDescription))
 
-        connectedPeripherals.removeValue(forKey: peripheral.identifier)
-        writeCharacteristics.removeValue(forKey: peripheral.identifier)
-        incomingBuffers.removeValue(forKey: peripheral.identifier)
+            connectedPeripherals.removeValue(forKey: peripheral.identifier)
+            writeCharacteristics.removeValue(forKey: peripheral.identifier)
+            incomingBuffers.removeValue(forKey: peripheral.identifier)
 
-        startScanning()
-    }
+            startScanning()
+        }
+
+        func connectToPeripheral(_ peripheral: CBPeripheral, deviceName: String) {
+            connectedPeripherals[peripheral.identifier] = peripheral
+            incomingBuffers[peripheral.identifier] = BMConstants.emptyString
+            peripheral.delegate = self
+
+            DispatchQueue.main.async {
+                self.statusText = BMConstants.statusConnectingTo(deviceName)
+            }
+
+            connectionTimeoutTimer?.invalidate()
+            connectionTimeoutTimer = Timer.scheduledTimer(
+                withTimeInterval: BMConstants.connectionTimeoutSeconds,
+                repeats: false
+            ) { [weak self] _ in
+                guard let self = self else { return }
+                if peripheral.state == .connecting {
+                    AppLogger.writeLog(BMLogMessages.connectionTimedOut(deviceName, BMConstants.connectionTimeoutSeconds))
+                    self.centralManager?.cancelPeripheralConnection(peripheral)
+                    self.connectedPeripherals.removeValue(forKey: peripheral.identifier)
+                    self.writeCharacteristics.removeValue(forKey: peripheral.identifier)
+
+                    DispatchQueue.main.async {
+                        self.statusText = BMConstants.statusDisconnectedScanning
+                    }
+                    self.startScanning()
+                }
+            }
+
+            self.centralManager?.connect(peripheral, options: nil)
+        }
 
     func centralManager(
         _ central: CBCentralManager,
@@ -191,17 +221,5 @@ extension BluetoothManager: CBCentralManagerDelegate {
                 }
             }
         }
-    }
-
-    func connectToPeripheral(_ peripheral: CBPeripheral, deviceName: String) {
-        connectedPeripherals[peripheral.identifier] = peripheral
-        incomingBuffers[peripheral.identifier] = BMConstants.emptyString
-        peripheral.delegate = self
-
-        DispatchQueue.main.async {
-            self.statusText = BMConstants.statusConnectingTo(deviceName)
-        }
-
-        self.centralManager?.connect(peripheral, options: nil)
     }
 }

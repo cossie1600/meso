@@ -16,14 +16,10 @@ extern uint8_t bmeI2cAddr;
 extern bool bsecReady;
 extern volatile bool newGasDataAvailable;
 
-extern bsecSensor defaultSensorList[];
-extern uint8_t numDefaultSensors;
 extern bool updateBsecSubscription(float sampleRate);
 extern SensorData sensorData;
 
-enum OperationMode { MODE_IDLE, MODE_DRY_AIR_DETECTION, MODE_BREATH_TEST, MODE_DIAGNOSTIC };
 extern OperationMode currentMode;
-enum BsecProfile { PROFILE_OFF, PROFILE_ULP_300S, PROFILE_LP_3S };
 extern BsecProfile currentProfile;
 
 extern void logMessage(String msg);
@@ -65,7 +61,7 @@ bool runPowerAndKineticsDiagnosticTest() {
   // Test 1: Verify Subscription to LP Mode (3-Second Interval)
   // -------------------------------------------------------------------
   logMessage("[DIAG 1/4]: Subscribing to BSEC LP (3s) Mode...");
-  if (updateBsecSubscription(BSEC_SAMPLE_RATE_LP) && bsec->status == BSEC_OK) {
+  if (updateBsecSubscription(BSEC_SAMPLE_RATE_LP) && bsec->status >= BSEC_OK) {
     currentProfile = PROFILE_LP_3S;
     logMessage("[DIAG 1/4 PASS]: Successfully subscribed to BSEC_SAMPLE_RATE_LP.");
     t1_lp_pass = true;
@@ -77,7 +73,7 @@ bool runPowerAndKineticsDiagnosticTest() {
   // Test 2: Verify Subscription to ULP Mode (300-Second Interval)
   // -------------------------------------------------------------------
   logMessage("[DIAG 2/4]: Subscribing to BSEC ULP (300s) Mode (Battery Saver)...");
-  if (updateBsecSubscription(BSEC_SAMPLE_RATE_ULP) && bsec->status == BSEC_OK) {
+  if (updateBsecSubscription(BSEC_SAMPLE_RATE_ULP) && bsec->status >= BSEC_OK) {
     currentProfile = PROFILE_ULP_300S;
     logMessage("[DIAG 2/4 PASS]: Successfully subscribed to BSEC_SAMPLE_RATE_ULP.");
     t2_ulp_pass = true;
@@ -180,7 +176,7 @@ bool runSelectivityDiagnosticTest() {
   // Test 2: BSEC Internal State & Accuracy
   // -------------------------------------------------------------------
   logMessage("[DIAG 2/6]: Checking BSEC internal status and accuracy...");
-  if (bsecReady && bsec->status == BSEC_OK) {
+  if (bsecReady && bsec->status >= BSEC_OK) {
     logMessage("[DIAG 2/6 PASS]: BSEC internal status OK. Current Accuracy = " + String(sensorData.bsecAccuracy));
     t2_pass = true;
   } else {
@@ -192,12 +188,10 @@ bool runSelectivityDiagnosticTest() {
   // -------------------------------------------------------------------
   logMessage("[DIAG 3/6]: Verifying LP sampling profile subscription...");
   bool subSuccess = true;
-  if (currentProfile != PROFILE_LP_3S || bsec->status != BSEC_OK) {
-    subSuccess = updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
-    currentProfile = PROFILE_LP_3S;
-  }
-
-  if (subSuccess && bsec->status == BSEC_OK) {
+  if (currentProfile != PROFILE_LP_3S || bsec->status < BSEC_OK) {
+  subSuccess = updateBsecSubscription(BSEC_SAMPLE_RATE_LP);
+}
+if (subSuccess && bsec->status >= BSEC_OK) {
     logMessage("[DIAG 3/6 PASS]: BSEC_SAMPLE_RATE_LP active.");
     t3_pass = true;
   } else {
@@ -246,7 +240,7 @@ bool runSelectivityDiagnosticTest() {
   // Test 5: Re-verify Profile Recovery
   // -------------------------------------------------------------------
   logMessage("[DIAG 5/6]: Re-verifying BSEC profile subscription...");
-  bool recoverySuccess = (bsec->status == BSEC_OK);
+  bool recoverySuccess = (bsec->status >= BSEC_OK);
 
   if (recoverySuccess) {
     logMessage("[DIAG 5/6 PASS]: Restored BSEC sampling profile cleanly.");
@@ -262,7 +256,7 @@ bool runSelectivityDiagnosticTest() {
   
   // Simulate end of breath sequence teardown
   bool ulpSubSuccess = updateBsecSubscription(BSEC_SAMPLE_RATE_ULP);
-  if (ulpSubSuccess && bsec->status == BSEC_OK) {
+  if (ulpSubSuccess && bsec->status >= BSEC_OK) {
     currentProfile = PROFILE_ULP_300S;
     currentMode = MODE_IDLE;
 

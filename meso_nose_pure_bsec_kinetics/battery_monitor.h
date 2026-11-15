@@ -4,48 +4,34 @@
 #include <Arduino.h>
 
 namespace BatteryConfig {
-  constexpr uint8_t ADC_PIN                     = 2;
-  constexpr uint8_t ADC_RESOLUTION_BITS         = 12;
-  constexpr uint8_t ADC_SAMPLE_COUNT            = 16;
-  constexpr uint32_t ADC_SAMPLE_DELAY_MS        = 1;
-  constexpr float VOLTAGE_DIVIDER_RATIO         = 2.0f;
-  constexpr float MV_TO_VOLTS_DIVISOR           = 1000.0f;
+  // Hardware Pin Assignment
+  constexpr uint8_t BATTERY_ADC_PIN                  = 1; // GPIO 1 / ADC1 Channel 0
 
-  constexpr float MIN_VALID_CELL_VOLTS          = 2.50f;
-  constexpr float CHARGER_CONNECTED_THRESHOLD_V = 4.22f;
+  // eFuse-Calibrated ADC & Divider Constants
+  constexpr uint8_t ADC_RESOLUTION_BITS              = 12;
+  constexpr uint8_t ADC_OVERSAMPLE_COUNT             = 4;
+  constexpr float   MILLIVOLTS_PER_VOLT              = 1000.0f;
+  constexpr float   VOLTAGE_DIVIDER_RATIO            = 2.0f;    // 100k / 100k divider network
+  constexpr float   PERCENTAGE_FULL_SCALE            = 100.0f;
 
-  struct OcvPoint {
-    float cellVolts;
-    float stateOfChargePct;
-  };
+  // Physical Cell & Operational Voltage Boundaries
+  constexpr float   MIN_PHYSICAL_CELL_DETECT_VOLTS   = 1.50f;   // Below 1.5V implies batteryless USB VBUS power
+  constexpr float   LIPO_MIN_OPERATIONAL_VOLTS       = 3.20f;   // Empty cutoff floor
+  constexpr float   LIPO_MAX_OPERATIONAL_VOLTS       = 4.20f;   // Full charge ceiling
 
-  constexpr size_t OCV_TABLE_SIZE = 11;
-  constexpr OcvPoint LIPO_OCV_TABLE[OCV_TABLE_SIZE] = {
-    { 4.20f, 100.0f },
-    { 4.10f,  90.0f },
-    { 4.00f,  80.0f },
-    { 3.90f,  70.0f },
-    { 3.82f,  60.0f },
-    { 3.78f,  50.0f },
-    { 3.74f,  40.0f },
-    { 3.70f,  30.0f },
-    { 3.65f,  20.0f },
-    { 3.55f,  10.0f },
-    { 3.30f,   0.0f }
-  };
+  // State-of-Charge Percentages (Zero Magic Numbers)
+  constexpr uint8_t USB_POWERED_FALLBACK_PERCENT     = 100;
+  constexpr uint8_t EMPTY_CELL_PERCENT               = 0;
+
+  // USB Hardware Start-of-Frame (SOF) Host Detection Constants (1 ms USB SOF cadence)
+  constexpr uint32_t USB_SOF_PROBE_DELAY_MS          = 3UL;     // Captures >= 2 hardware SOF ticks
+  constexpr uint32_t USB_SOF_HOLD_MS                 = 100UL;   // Holds tethered state across loop ticks
 }
 
-class BatteryMonitor {
-public:
-  static void init();
-  static uint8_t readPercentage();
-  static uint8_t readPercentageAndVoltage(float &outVoltage);
-  static bool isCharging();
-  static float getRawVoltage();
-
-private:
-  static float readCellVoltage();
-  static float interpolateStateOfCharge(float voltage);
-};
+namespace BatteryMonitor {
+  void init();
+  bool isCharging();
+  uint8_t readPercentageAndVoltage(float &outVoltage);
+}
 
 #endif // BATTERY_MONITOR_H

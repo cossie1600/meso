@@ -270,7 +270,7 @@ extension BluetoothManager {
 
     var mesoNosePeripheral: CBPeripheral? {
         return connectedPeripherals.values.first {
-            $0.name?.hasPrefix(AppConfig.mesoNoseBluetoothName) == true
+            $0.name?.hasPrefix(AppConfig.mesoNoseBluetoothName) == true || $0.identifier == savedMesoNoseUUID
         }
     }
 
@@ -476,13 +476,19 @@ extension BluetoothManager {
 
             AppLogger.writeLog("[TRACE]: Ingesting MesoNose Packet -> \(text)")
 
-            // Replace the previous battery parsing block:
+            // Ingestion: Parse Battery & Detect External Power Safely
             if let sample = MesoNoseSample(jsonString: text),
                let bat = sample.battery,
                bat >= MesoNoseConstants.minValidBatteryPercent && bat <= MesoNoseConstants.maxValidBatteryPercent {
-                self.mesoNoseBattery = bat
+                if bat == BMConstants.zeroBatteryThreshold {
+                    self.mesoNoseBattery = BMConstants.tetheredFallbackBatteryPercent
+                    self.isExternalPower = true
+                } else {
+                    self.mesoNoseBattery = bat
+                    self.isExternalPower = false
+                }
             }
-
+            
             // 1. Handle status flags using MesoNoseFirmwareStatus
             if let statusStr = jsonObj[MesoNosePayloadKeys.status] as? String,
                 let status = MesoNoseFirmwareStatus(rawValue: statusStr)

@@ -28,6 +28,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol {
     private let savedMesoPinUUIDKey = BMConstants.savedMesoPinUUIDKey
     
     @Published var mesoNoseBattery: Int? = nil
+    @Published var isExternalPower: Bool = false
     @Published var ignoredMesoNoseUUID: UUID? = nil
     @Published var isPairingModeActive: Bool = false
     @Published var hasReceivedLiveTelemetry: Bool = false
@@ -38,7 +39,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol {
     var preheatWorkItem: DispatchWorkItem?
     var postTestPurgeWorkItem: DispatchWorkItem?
     var pendingMesoNoseCommand: AppConfig.MesoNoseCommand?
-
+    
     @Published var savedMesoNoseUUID: UUID? {
         didSet {
             if let uuid = savedMesoNoseUUID {
@@ -91,6 +92,7 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol {
     }
 
     var blowTimeoutTimer: Timer?
+    var connectionTimeoutTimer: Timer?
     var modelContainer: ModelContainer?
     var centralManager: CBCentralManager?
 

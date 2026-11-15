@@ -35,8 +35,8 @@ $$R_{target50} = R_{min} + 0.5 \times (R_{base} - R_{min})$$
 
 $$\tau_{50} = t_{recovery} - t_{min} \quad \text{where } R_{gas}(t_{recovery}) \ge R_{target50}$$
 
-* **Fast Recovery ($\tau_{50} < 3.5\text{s}$):** Rapid desorption typical of volatile non-sulfur compounds (e.g., ethanol, food/beverage esters).
-* **Slow Recovery ($\tau_{50} \ge 3.5\text{s}$):** Slow desorption typical of Volatile Sulfur Compounds (VSCs like $H_2S$ and methyl mercaptan).
+* **Fast Recovery ($\tau_{50} < 4.2\text{s}$):** Rapid desorption typical of volatile non-sulfur compounds (e.g., ethanol, food/beverage esters).
+* **Slow Recovery ($\tau_{50} \ge 4.2\text{s}$):** Slow desorption typical of Volatile Sulfur Compounds (VSCs like $H_2S$ and methyl mercaptan).
 
 ---
 

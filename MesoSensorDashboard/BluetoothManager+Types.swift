@@ -33,9 +33,12 @@ struct BMConstants {
     static let notificationStateDelaySeconds: Double = 0.3
     static let initialBurstDurationSeconds: Double = 15.0
     static let blowWindowTimeoutSeconds: Double = 32.0
-    static let proximityRSSIThreshold: Int = -65
+    static let proximityRSSIThreshold: Int = -80
     static let invalidRSSI: Int = 127
-
+    static let connectionTimeoutSeconds: TimeInterval = 7.0
+    static let zeroBatteryThreshold: Int = 0
+    static let tetheredFallbackBatteryPercent: Int = 100
+    
     static let zeroInt: Int = 0
     static let zeroValue: Double = 0.0
     static let zeroVOC: Int = 0
@@ -135,6 +138,10 @@ struct BMLogMessages {
 
     static func connectionDropped(_ deviceName: String) -> String {
         "Swift BLE: Connection dropped for \(deviceName). Re-entering scan."
+    }
+    
+    static func connectionTimedOut(_ deviceName: String, _ timeout: TimeInterval) -> String {
+        "Swift BLE ERROR: Connection attempt to \(deviceName) timed out after \(timeout)s. Recovering scan."
     }
 
     static func restoringSession(_ deviceName: String) -> String {

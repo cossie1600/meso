@@ -1,64 +1,73 @@
 #include "battery_monitor.h"
+#include "soc/usb_serial_jtag_struct.h"
 
-void BatteryMonitor::init() {
-  pinMode(BatteryConfig::ADC_PIN, INPUT);
-  analogReadResolution(BatteryConfig::ADC_RESOLUTION_BITS);
-  analogSetPinAttenuation(BatteryConfig::ADC_PIN, ADC_11db);
-}
+namespace BatteryMonitor {
 
-float BatteryMonitor::readCellVoltage() {
-  using namespace BatteryConfig;
-  uint32_t totalMilliVolts = 0;
-  for (uint8_t i = 0; i < ADC_SAMPLE_COUNT; i++) {
-    totalMilliVolts += analogReadMilliVolts(ADC_PIN);
-    vTaskDelay(pdMS_TO_TICKS(ADC_SAMPLE_DELAY_MS));
+  void init() {
+    pinMode(BatteryConfig::BATTERY_ADC_PIN, INPUT);
+    analogReadResolution(BatteryConfig::ADC_RESOLUTION_BITS);
+    analogSetAttenuation(ADC_11db); // Full range 0 - 3.1V attenuation
   }
-  const float rawPinVolts = (static_cast<float>(totalMilliVolts) / static_cast<float>(ADC_SAMPLE_COUNT)) / MV_TO_VOLTS_DIVISOR;
-  return rawPinVolts * VOLTAGE_DIVIDER_RATIO;
-}
 
-float BatteryMonitor::getRawVoltage() {
-  return readCellVoltage();
-}
-
-bool BatteryMonitor::isCharging() {
-  return (readCellVoltage() >= BatteryConfig::CHARGER_CONNECTED_THRESHOLD_V);
-}
-
-float BatteryMonitor::interpolateStateOfCharge(float voltage) {
-  using namespace BatteryConfig;
-  if (voltage >= LIPO_OCV_TABLE[0].cellVolts) return 100.0f;
-  if (voltage <= LIPO_OCV_TABLE[OCV_TABLE_SIZE - 1].cellVolts) return 0.0f;
-
-  for (size_t i = 0; i < OCV_TABLE_SIZE - 1; i++) {
-    const float vHigh = LIPO_OCV_TABLE[i].cellVolts;
-    const float vLow  = LIPO_OCV_TABLE[i + 1].cellVolts;
-    if (voltage <= vHigh && voltage >= vLow) {
-      const float socHigh = LIPO_OCV_TABLE[i].stateOfChargePct;
-      const float socLow  = LIPO_OCV_TABLE[i + 1].stateOfChargePct;
-      const float ratio   = (voltage - vLow) / (vHigh - vLow);
-      return socLow + ratio * (socHigh - socLow);
+  bool isCharging() {
+    if (static_cast<bool>(Serial)) {
+      return true;
     }
+
+    static uint32_t lastSofFrame = USB_SERIAL_JTAG.fram_num.val;
+    static uint32_t lastUsbSofSeenMs = 0;
+    static bool hasSampledOnce = false;
+
+    if (!hasSampledOnce) {
+      hasSampledOnce = true;
+      delay(BatteryConfig::USB_SOF_PROBE_DELAY_MS);
+    }
+
+    const uint32_t nowMs = millis();
+    const uint32_t currentSofFrame = USB_SERIAL_JTAG.fram_num.val;
+    if (currentSofFrame != lastSofFrame) {
+      lastSofFrame = currentSofFrame;
+      lastUsbSofSeenMs = nowMs;
+      return true;
+    }
+
+    return (lastUsbSofSeenMs > 0) && ((nowMs - lastUsbSofSeenMs) < BatteryConfig::USB_SOF_HOLD_MS);
   }
-  return 0.0f;
-}
 
-uint8_t BatteryMonitor::readPercentage() {
-  float dummyVoltage = 0.0f;
-  return readPercentageAndVoltage(dummyVoltage);
-}
+  uint8_t readPercentageAndVoltage(float &outVoltage) {
+    uint32_t accumulatedMv = 0;
+    for (uint8_t i = 0; i < BatteryConfig::ADC_OVERSAMPLE_COUNT; i++) {
+      accumulatedMv += analogReadMilliVolts(BatteryConfig::BATTERY_ADC_PIN);
+    }
 
-uint8_t BatteryMonitor::readPercentageAndVoltage(float &outVoltage) {
-  using namespace BatteryConfig;
-  outVoltage = readCellVoltage();
+    const float averagePinMv = static_cast<float>(accumulatedMv) /
+                               static_cast<float>(BatteryConfig::ADC_OVERSAMPLE_COUNT);
 
-  if (outVoltage < MIN_VALID_CELL_VOLTS || outVoltage <= LIPO_OCV_TABLE[OCV_TABLE_SIZE - 1].cellVolts) {
-    return 0;
+    outVoltage = (averagePinMv / BatteryConfig::MILLIVOLTS_PER_VOLT) *
+                 BatteryConfig::VOLTAGE_DIVIDER_RATIO;
+
+    // If the MCU is running while cell voltage reads below 1.50V, it is powered
+    // via USB VBUS with no physical LiPo attached (including dumb USB wall chargers)
+    if (outVoltage < BatteryConfig::MIN_PHYSICAL_CELL_DETECT_VOLTS) {
+      return BatteryConfig::USB_POWERED_FALLBACK_PERCENT;
+    }
+
+    // Upper and lower operational clamping
+    if (outVoltage >= BatteryConfig::LIPO_MAX_OPERATIONAL_VOLTS) {
+      return BatteryConfig::USB_POWERED_FALLBACK_PERCENT;
+    }
+    if (outVoltage <= BatteryConfig::LIPO_MIN_OPERATIONAL_VOLTS) {
+      return BatteryConfig::EMPTY_CELL_PERCENT;
+    }
+
+    // Linear interpolation across operational voltage span
+    constexpr float voltageRangeVolts =
+      BatteryConfig::LIPO_MAX_OPERATIONAL_VOLTS - BatteryConfig::LIPO_MIN_OPERATIONAL_VOLTS;
+
+    const float percentage = ((outVoltage - BatteryConfig::LIPO_MIN_OPERATIONAL_VOLTS) / voltageRangeVolts) *
+                             BatteryConfig::PERCENTAGE_FULL_SCALE;
+
+    return static_cast<uint8_t>(percentage);
   }
-  if (outVoltage >= CHARGER_CONNECTED_THRESHOLD_V) {
-    return 100;
-  }
 
-  const float soc = interpolateStateOfCharge(outVoltage);
-  return static_cast<uint8_t>(soc + 0.5f);
-}
+} // namespace BatteryMonitor
