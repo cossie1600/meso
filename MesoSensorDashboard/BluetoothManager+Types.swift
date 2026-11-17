@@ -60,6 +60,10 @@ struct BMConstants {
     static let debugEmergencyActive = "DEBUG: Forced Emergency Active"
     
     static let firmwareLogPrefix = "[LOG]:"
+    static let minValidAmbientTempC: Double = 10.0
+    static let maxValidAmbientTempC: Double = 40.0
+    static let minValidAmbientHumidityPct: Double = 20.0
+    static let maxValidAmbientHumidityPct: Double = 85.0
 
     static func statusConnectingTo(_ deviceName: String) -> String {
         "Connecting to \(deviceName)..."

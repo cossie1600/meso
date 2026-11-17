@@ -73,6 +73,16 @@ BreathResult evaluateBreathResult(float deltaDrop, float maxDeltaHumidity, float
     return BreathResult::INVALID_EXHALATION;
 }
 
+bool isAmbientEnvironmentValid(float tempC, float humidityPct, float gasResOhms) {
+    const bool validTemp = (tempC >= SensorConstants::MIN_VALID_AMBIENT_TEMP_C) &&
+                           (tempC <= SensorConstants::MAX_VALID_AMBIENT_TEMP_C);
+    const bool validRH   = (humidityPct >= SensorConstants::MIN_VALID_AMBIENT_RH_PCT) &&
+                           (humidityPct <= SensorConstants::MAX_VALID_AMBIENT_RH_PCT);
+    const bool validVOC  = (gasResOhms >= SensorConstants::MIN_VALID_AMBIENT_VOC_OHMS) &&
+                           (gasResOhms <= SensorConstants::MAX_VALID_AMBIENT_VOC_OHMS);
+    return validTemp && validRH && validVOC;
+}
+
 const char* breathResultToString(BreathResult result) {
     switch (result) {
         case BreathResult::INVALID_EXHALATION:        return "INVALID_EXHALATION";
@@ -84,6 +94,7 @@ const char* breathResultToString(BreathResult result) {
         case BreathResult::SOME_BEVERAGE_FOOD_ODOR:   return "SOME_BEVERAGE_FOOD_ODOR";
         case BreathResult::NOTICEABLE_MALODOR:        return "NOTICEABLE_MALODOR";
         case BreathResult::STRONG_MALODOR:            return "STRONG_MALODOR";
+        case BreathResult::ENVIRONMENT_OUT_OF_RANGE:  return "ENVIRONMENT_OUT_OF_RANGE";
     }
     return "UNKNOWN";
 }

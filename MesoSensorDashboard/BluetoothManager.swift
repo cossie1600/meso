@@ -139,21 +139,22 @@ class BluetoothManager: NSObject, AirQualityManagerProtocol {
     }
 
     var isRoomBaselineReady: Bool {
-        guard mesoNosePeripheral?.state == .connected else { return false }
+            guard mesoNosePeripheral?.state == .connected else { return false }
 
-        // Unblocks as soon as at least one valid baseline reading exists in memory
-        guard let latestAmbient = mesoNoseSamples.first(where: { $0.breathDropDelta == BMConstants.zeroValue }) else {
-            return false
+            // Unblocks as soon as at least one valid baseline reading exists in memory
+            guard let latestAmbient = mesoNoseSamples.first(where: { $0.breathDropDelta == BMConstants.zeroValue }) else {
+                return false
+            }
+
+            let validTemp = latestAmbient.temp >= BMConstants.minValidAmbientTempC
+                         && latestAmbient.temp <= BMConstants.maxValidAmbientTempC
+            let validHumidity = latestAmbient.humidity >= BMConstants.minValidAmbientHumidityPct
+                             && latestAmbient.humidity <= BMConstants.maxValidAmbientHumidityPct
+            let isUnsaturated = latestAmbient.voc >= BMConstants.minUnsaturatedVOC
+                             && latestAmbient.voc <= BMConstants.maxUnsaturatedVOC
+
+            return validTemp && validHumidity && isUnsaturated
         }
-
-        let validSensors = latestAmbient.temp > BMConstants.zeroValue
-                        && latestAmbient.humidity > BMConstants.zeroValue
-                        && latestAmbient.voc > BMConstants.zeroVOC
-        let isUnsaturated = latestAmbient.voc > BMConstants.minUnsaturatedVOC
-                         && latestAmbient.voc < BMConstants.maxUnsaturatedVOC
-
-        return validSensors && isUnsaturated
-    }
     
     init(modelContainer: ModelContainer? = nil) {
         if let uuidString = UserDefaults.standard.string(forKey: BMConstants.savedMesoNoseUUIDKey),

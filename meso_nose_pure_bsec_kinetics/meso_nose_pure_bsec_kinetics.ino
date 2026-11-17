@@ -79,6 +79,7 @@ constexpr const char *STATE_READY_PLEASE_BLOW = "READY_PLEASE_BLOW";
 constexpr const char *STATE_TESTING_SENSING_BREATH = "TESTING_SENSING_BREATH";
 constexpr const char *STATE_TIMEOUT = "TIMEOUT";
 constexpr const char *STATUS_BREATH_TEST_COMPLETE = "BREATH_TEST_COMPLETE";
+constexpr const char *STATE_ENVIRONMENT_OUT_OF_RANGE = "ENVIRONMENT_OUT_OF_RANGE";
 
 constexpr const char *RESULT_NONE = "NONE";
 
@@ -509,9 +510,24 @@ void resetToULP() {
   updateBsecSubscription(BSEC_SAMPLE_RATE_ULP);
 }
 
+bool checkAmbientEnv() {
+  if (!isAmbientEnvironmentValid(sensorData.currentTemp, sensorData.currentHumidity, sensorData.currentGasRes)) {
+    logMessage("[SEQUENCE ABORTED]: Ambient environment out of range (Temp=" +
+              String(sensorData.currentTemp, TELEMETRY_FLOAT_PRECISION) + "C, RH=" +
+              String(sensorData.currentHumidity, TELEMETRY_FLOAT_PRECISION) + "%, VOC=" +
+              String((long)sensorData.currentGasRes) + " Ohm).");
+    dispatchData("{\"state\":\"" + String(STATE_ENVIRONMENT_OUT_OF_RANGE) + "\"}");
+    resetToULP();
+    setBleConnectionSpeed(false);
+    currentMode = MODE_IDLE;
+    return false;
+  }
+  return true;
+}
+
 void runBreathSequence() {
   logMessage("[SEQUENCE START]: Breath test sequence initiated (Pure BSEC LP).");
-
+  if (!checkAmbientEnv()) return;
   resetTestEvaluationData();
 
   float ambientTemp = sensorData.currentTemp;
@@ -530,6 +546,7 @@ void runBreathSequence() {
     currentMode = MODE_IDLE;  // Added clean state reset
     return;
   }
+  if (!checkAmbientEnv()) return;
 
   float minRes = baseRes;
   if (waitForBreathExhalation(baseRes, baseHumidity, baseTemp, minRes, maxDeltaRH)) {

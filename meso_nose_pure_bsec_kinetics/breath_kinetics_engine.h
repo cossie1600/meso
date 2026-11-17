@@ -3,6 +3,14 @@
 #include <cstdint>
 
 namespace SensorConstants {
+    // Valid Ambient Operating Envelope for Reliable Breath Kinetics
+    constexpr float MIN_VALID_AMBIENT_TEMP_C        = 10.0f;      // 50 F (blocks winter outdoor condensation skew)
+    constexpr float MAX_VALID_AMBIENT_TEMP_C        = 40.0f;      // 104 F (blocks extreme heat skew)
+    constexpr float MIN_VALID_AMBIENT_RH_PCT        = 20.0f;      // Blocks arid/freezing outdoor air
+    constexpr float MAX_VALID_AMBIENT_RH_PCT        = 85.0f;      // Blocks fog/steam saturation
+    constexpr float MIN_VALID_AMBIENT_VOC_OHMS      = 5000.0f;    // Matches HW_MIN_SENSOR_GAS_RES
+    constexpr float MAX_VALID_AMBIENT_VOC_OHMS      = 100000000.0f; // Matches iOS maxUnsaturatedVOC (100 MOhm)
+
     // Moisture & Dry Mouth Boundaries (%)
     constexpr float DRY_MOUTH_MAX_DELTA_RH_PCT      = 3.5f;
 
@@ -18,6 +26,7 @@ namespace SensorConstants {
 
 enum class BreathResult : uint8_t {
     INVALID_EXHALATION = 0,
+    ENVIRONMENT_OUT_OF_RANGE,
     DRY_MOUTH_HYDRATE,
     DRY_MOUTH_VSC_BUILDUP,
     BALANCED_BREATH,
@@ -27,6 +36,8 @@ enum class BreathResult : uint8_t {
     NOTICEABLE_MALODOR,
     STRONG_MALODOR
 };
+
+bool isAmbientEnvironmentValid(float tempC, float humidityPct, float gasResOhms);
 
 enum class BreathScenario : uint8_t {
     INVALID_EXHALATION = 0,

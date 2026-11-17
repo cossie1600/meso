@@ -67,6 +67,7 @@ enum MesoNoseFirmwareState: String {
     case timeout = "TIMEOUT"
     case profileULP = "PROFILE_ULP"
     case profileLP = "PROFILE_LP"
+    case environmentOutOfRange = "ENVIRONMENT_OUT_OF_RANGE"
 }
 
 /// Exact parity with C++ BreathResult enum in breath_kinetics_engine.h / .cpp
@@ -145,6 +146,7 @@ enum MesoNoseResult: String, CaseIterable, Sendable {
 }
 
 struct MesoNoseUIStrings {
+    static let environmentOutOfRange = "Move indoors (10°C–40°C, 20%–85% RH) for an accurate breath reading."
     static let deviceUnpaired = "Pendant Unpaired"
     static let searchingNearby = "Searching for nearby pendant..."
     static let warmingUpBlocked = "Warming Up... Please wait before blowing."
@@ -454,6 +456,7 @@ extension BluetoothManager {
             self.breathTestState = .processing
 
         case MesoNoseFirmwareState.timeout.rawValue,
+            MesoNoseFirmwareState.environmentOutOfRange.rawValue,
             MesoNoseFirmwareState.exhalationTooWeak.rawValue:
             handleBreathTestCompletion(
                 didSucceed: false,
@@ -517,6 +520,11 @@ extension BluetoothManager {
                     "[TRACE]: Detected Firmware State Transition -> \(state.rawValue)"
                 )
                 switch state {
+                case .environmentOutOfRange:
+                    self.statusText = MesoNoseUIStrings.environmentOutOfRange
+                    self.handleBreathTestCompletion(didSucceed: false, failureReason: state.rawValue)
+                    return
+                    
                 case .coldBootWarmingUp:
                     self.breathTestState = .coldBootWarmup
                     if let remainingSec = jsonObj[
