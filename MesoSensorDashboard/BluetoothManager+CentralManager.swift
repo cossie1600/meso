@@ -59,6 +59,10 @@ extension BluetoothManager: CBCentralManagerDelegate {
                 ?? BMConstants.defaultUnnamedLocalDevice
             let deviceID = peripheral.identifier
             
+            if let ignoredID = ignoredMesoNoseUUID, ignoredID == deviceID {
+                return
+            }
+            
             guard RSSI.intValue != BMConstants.invalidRSSI && RSSI.intValue >= BMConstants.proximityRSSIThreshold else {
                 AppLogger.writeLog("[BLE SCAN]: Spotted \(deviceName) (\(deviceID)) with weak RSSI \(RSSI) dBm.")
                 return

@@ -49,22 +49,6 @@ struct VotreAirDashboardView: View {
         }
         return "--% RH"
     }
-
-//    private var currentBatteryLevel: Int {
-//        if let liveBattery = bleManager.mesoNoseBattery {
-//            return liveBattery
-//        }
-//        return latestSample?.battery ?? 100
-//    }
-//
-//    private var batteryIconName: String {
-//        switch currentBatteryLevel {
-//        case 75...100: return "battery.100"
-//        case 50..<75: return "battery.75"
-//        case 25..<50: return "battery.50"
-//        default: return "battery.25"
-//        }
-//    }
     
     private var batteryState: BatteryDisplayState {
         guard bleManager.isConnected else {

@@ -332,6 +332,9 @@ extension BluetoothManager {
         ignoredMesoNoseUUID = peripheral.identifier
         savedMesoNoseUUID = nil
         isPairingModeActive = false
+        hasReceivedLiveTelemetry = false
+        mesoNoseBattery = nil
+        isExternalPower = false
         centralManager?.cancelPeripheralConnection(peripheral)
         connectedPeripherals.removeValue(forKey: peripheral.identifier)
         writeCharacteristics.removeValue(forKey: peripheral.identifier)
