@@ -266,6 +266,38 @@ enum ConnectionStrategy: Sendable {
     case emergency
 }
 
+enum TemperatureUnit: String, CaseIterable, Identifiable {
+    case fahrenheit = "F"
+    case celsius = "C"
+
+    var id: String { rawValue }
+
+    var shortLabel: String {
+        switch self {
+        case .fahrenheit: return "°F"
+        case .celsius: return "°C"
+        }
+    }
+}
+
+struct TemperatureUI {
+    static let unitStorageKey = "PreferredTemperatureUnit"
+    static let defaultUnit: TemperatureUnit = .fahrenheit
+    static let celsiusToFahrenheitScale: Double = 9.0 / 5.0
+    static let celsiusToFahrenheitOffset: Double = 32.0
+    static let decimalPrecision: Int = 1
+
+    static func format(celsiusValue: Double?, unit: TemperatureUnit, placeholder: String = BMConstants.placeholderValue) -> String {
+        guard let tempC = celsiusValue, tempC > MesoNoseConstants.zeroDouble else {
+            return placeholder + unit.shortLabel
+        }
+        let displayValue: Double = (unit == .fahrenheit)
+            ? ((tempC * celsiusToFahrenheitScale) + celsiusToFahrenheitOffset)
+            : tempC
+        return String(format: "%.\(decimalPrecision)f%@", displayValue, unit.shortLabel)
+    }
+}
+
 enum AlertVisualTheme: Sendable {
     case none
     case fineParticulates

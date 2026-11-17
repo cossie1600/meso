@@ -18,6 +18,9 @@ private enum UIConstants {
     static let buttonHeight: CGFloat = 30
     static let buttonWidth: CGFloat = 72
 
+    static let tempUnitTitle = "Temperature Unit"
+    static let tempPickerWidth: CGFloat = 110
+    
     // Font Sizes
     static let labelFontSize: CGFloat = 15
     static let buttonFontSize: CGFloat = 13
@@ -41,6 +44,14 @@ private enum UIConstants {
 struct SettingsView: View {
     @EnvironmentObject var bluetoothManager: BluetoothManager
     @AppStorage(UIConstants.pairedUUIDKey) private var pairedUUIDString: String = ""
+    @AppStorage(TemperatureUI.unitStorageKey) private var selectedTempUnitRaw: String = TemperatureUI.defaultUnit.rawValue
+
+    private var selectedTempUnitBinding: Binding<TemperatureUnit> {
+        Binding(
+            get: { TemperatureUnit(rawValue: selectedTempUnitRaw) ?? TemperatureUI.defaultUnit },
+            set: { selectedTempUnitRaw = $0.rawValue }
+        )
+    }
 
     private var isPairedOrConnected: Bool {
         bluetoothManager.savedMesoNoseUUID != nil || bluetoothManager.mesoNosePeripheral?.state == .connected
@@ -78,6 +89,27 @@ struct SettingsView: View {
 
                 ScrollView {
                     VStack(spacing: UIConstants.cardPadding) {
+                        
+                        VStack(alignment: .leading, spacing: 0) {
+                            HStack(alignment: .center, spacing: 0) {
+                                Text(UIConstants.tempUnitTitle)
+                                    .font(.system(size: UIConstants.labelFontSize, weight: .bold, design: .rounded))
+                                    .foregroundColor(Color.appPrimaryText)
+
+                                Spacer()
+
+                                Picker(UIConstants.tempUnitTitle, selection: selectedTempUnitBinding) {
+                                    ForEach(TemperatureUnit.allCases) { unit in
+                                        Text(unit.shortLabel).tag(unit)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(width: UIConstants.tempPickerWidth)
+                            }
+                        }
+                        .padding(UIConstants.cardPadding)
+                        .background(Color.jadeiteTranslucent)
+                        .cornerRadius(UIConstants.cardCornerRadius)
                         // Pendant Device Card
                         VStack(alignment: .leading, spacing: 0) {
                             HStack(alignment: .center, spacing: 0) {

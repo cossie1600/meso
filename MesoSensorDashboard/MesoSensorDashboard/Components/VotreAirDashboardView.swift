@@ -8,7 +8,19 @@ import SwiftUI
 struct VotreAirDashboardView: View {
     @ObservedObject var bleManager: BluetoothManager
     @State private var highlightedSampleID: Date? = nil
+    
+    @AppStorage(TemperatureUI.unitStorageKey) private var selectedTempUnitRaw: String = TemperatureUI.defaultUnit.rawValue
 
+    private var preferredTemperatureUnit: TemperatureUnit {
+        TemperatureUnit(rawValue: selectedTempUnitRaw) ?? TemperatureUI.defaultUnit
+    }
+
+    private var formattedTemperature: String {
+        TemperatureUI.format(
+            celsiusValue: latestSample?.temp,
+            unit: preferredTemperatureUnit
+        )
+    }
     private struct UIConstants {
         static let sectionTitle = "YOUR AIR INSIGHTS"
         static let seeAllText = "See All"
@@ -31,13 +43,6 @@ struct VotreAirDashboardView: View {
         bleManager.mesoNoseSamples.first
     }
 
-    private var formattedTemperature: String {
-        if let temp = latestSample?.temp, temp > MesoNoseConstants.zeroDouble {
-            return String(format: "%.1f°C", temp)
-        }
-        return "--°C"
-    }
-
     private var formattedHumidity: String {
         if let rh = latestSample?.humidity, rh > MesoNoseConstants.zeroDouble {
             return String(format: "%.1f%% RH", rh)
@@ -45,21 +50,21 @@ struct VotreAirDashboardView: View {
         return "--% RH"
     }
 
-    private var currentBatteryLevel: Int {
-        if let liveBattery = bleManager.mesoNoseBattery {
-            return liveBattery
-        }
-        return latestSample?.battery ?? 100
-    }
-
-    private var batteryIconName: String {
-        switch currentBatteryLevel {
-        case 75...100: return "battery.100"
-        case 50..<75: return "battery.75"
-        case 25..<50: return "battery.50"
-        default: return "battery.25"
-        }
-    }
+//    private var currentBatteryLevel: Int {
+//        if let liveBattery = bleManager.mesoNoseBattery {
+//            return liveBattery
+//        }
+//        return latestSample?.battery ?? 100
+//    }
+//
+//    private var batteryIconName: String {
+//        switch currentBatteryLevel {
+//        case 75...100: return "battery.100"
+//        case 50..<75: return "battery.75"
+//        case 25..<50: return "battery.50"
+//        default: return "battery.25"
+//        }
+//    }
     
     private var batteryState: BatteryDisplayState {
         guard bleManager.isConnected else {
