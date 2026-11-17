@@ -857,13 +857,18 @@ void startBleAdvertisingWithInterval(uint16_t minIntervalUnits, uint16_t maxInte
     pAdvertising->stop();
   }
 
-  pAdvertising->setName(Device_Name.c_str());
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->enableScanResponse(true);
+  NimBLEAdvertisementData advData;
+  advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+  advData.setCompleteServices(NimBLEUUID(SERVICE_UUID));
+
+  NimBLEAdvertisementData scanRespData;
+  scanRespData.setName(Device_Name.c_str());
+
+  pAdvertising->setAdvertisementData(advData);
+  pAdvertising->setScanResponseData(scanRespData);
   pAdvertising->setMinInterval(minIntervalUnits);
   pAdvertising->setMaxInterval(maxIntervalUnits);
-  pAdvertising->refreshAdvertisingData();
-  NimBLEDevice::startAdvertising();
+  pAdvertising->start();
 }
 
 void setup() {

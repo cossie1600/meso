@@ -40,12 +40,12 @@ extension BluetoothManager: CBCentralManagerDelegate {
         guard centralManager?.state == .poweredOn else { return }
 
         AppLogger.writeLog(BMLogMessages.startingScan)
+        let mesoNoseServiceUUID = CBUUID(string: AppConfig.mesoNoseServiceUUIDString)
         centralManager?.scanForPeripherals(
-            withServices: nil,
+            withServices: [mesoNoseServiceUUID],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
     }
-
     // BluetoothManager+CentralManager.swift
 
     func centralManager(
