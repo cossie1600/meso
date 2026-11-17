@@ -146,7 +146,7 @@ enum MesoNoseResult: String, CaseIterable, Sendable {
 }
 
 struct MesoNoseUIStrings {
-    static let environmentOutOfRange = "Move indoors (10°C–40°C, 20%–85% RH) for an accurate breath reading."
+    static let environmentOutOfRange = "The air around your pendant feels a bit too chilly, warm, or humid for a clear reading. Stepping into a comfortable indoor space for a moment will help us get an accurate result."
     static let deviceUnpaired = "Pendant Unpaired"
     static let searchingNearby = "Searching for nearby pendant..."
     static let warmingUpBlocked = "Warming Up... Please wait before blowing."
