@@ -21,8 +21,8 @@ The research underlying $T_{50}$ stems from **adsorption and desorption reaction
 
 #### 1. Surface Binding Affinity & Activation Energy
 
-* **Fast Recovery ($T_{50} < 3.5\text{s}$):** Non-sulfur volatile organic compounds (esters, alcohols, and aliphatic hydrocarbons from recent food, beverages, or mouthwashes) undergo weak physisorption or mild chemisorption on the heated sensor plate (~300°C). When exhalation stops and fresh air flows over the plate, these weakly bound molecules desorb rapidly.
-* **Slow Recovery ($T_{50} \ge 3.5\text{s}$):** Volatile Sulfur Compounds (VSCs—primarily Hydrogen Sulfide $H_2S$ and Methyl Mercaptan $\text{CH}_3\text{SH}$ responsible for oral malodor) form strong chemical bonds with oxygen vacancy sites on metal oxides. These compounds require higher activation energy and significantly longer relaxation windows to break surface bonds and desorb.
+* **Fast Recovery ($T_{50} < 4.2\text{s}$):** Non-sulfur volatile organic compounds (esters, alcohols, and aliphatic hydrocarbons from recent food, beverages, or mouthwashes) undergo weak physisorption or mild chemisorption on the heated sensor plate (~300°C). When exhalation stops and fresh air flows over the plate, these weakly bound molecules desorb rapidly.
+* **Slow Recovery ($T_{50} \ge 4.2\text{s}$):** Volatile Sulfur Compounds (VSCs—primarily Hydrogen Sulfide $H_2S$ and Methyl Mercaptan $\text{CH}_3\text{SH}$ responsible for oral malodor) form strong chemical bonds with oxygen vacancy sites on metal oxides. These compounds require higher activation energy and significantly longer relaxation windows to break surface bonds and desorb.
 
 #### 2. Recovery Time Metrics in Sensor Literature
 
@@ -42,3 +42,5 @@ In chemical sensor characterization and international standards (such as **ISO 1
 
 * **Standard Test Methods for VOC Detectors (ISO 16000-29):** Standard governing the evaluation of response and recovery kinetics ($\tau_{50}$) in indoor air and breath testing gas sensors.
 * [ISO 16000-29 Test Methods for VOC Detectors (Bosch BME680 Technical Specification)](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bme680-ds001.pdf)
+
+Kinetic Breath Sensing

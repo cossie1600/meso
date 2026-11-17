@@ -137,6 +137,10 @@ extension BluetoothManager: CBPeripheralDelegate {
 
             if line.isEmpty { continue }
 
+            if line.hasPrefix(BMConstants.firmwareLogPrefix) {
+                continue
+            }
+
             if line.contains(BMConstants.syncCompleteToken) {
                 AppLogger.writeLog(BMLogMessages.syncCompleteReceived)
                 DispatchQueue.main.async {

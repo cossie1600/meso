@@ -45,12 +45,13 @@ constexpr uint32_t I2C_CLOCK_SPEED_HZ = 100000;
 constexpr uint32_t I2C_BUS_TIMEOUT_MS = 1000;
 constexpr uint32_t SERIAL_AUTO_FLUSH_TIMEOUT_MS = 250UL;
 
-constexpr uint16_t BLE_ADV_FAST_MIN_INTERVAL_UNITS = 160;     // 100 ms
-constexpr uint16_t BLE_ADV_FAST_MAX_INTERVAL_UNITS = 320;     // 200 ms
-constexpr uint16_t BLE_ADV_ULP_MIN_INTERVAL_UNITS = 800;      // 500 ms
-constexpr uint16_t BLE_ADV_ULP_MAX_INTERVAL_UNITS = 1280;     // 800 ms
+constexpr uint16_t BLE_ADV_FAST_MIN_INTERVAL_UNITS = 96;      // 60 ms (96 * 0.625 ms) - instant lock on boot/disconnect
+constexpr uint16_t BLE_ADV_FAST_MAX_INTERVAL_UNITS = 160;     // 100 ms (160 * 0.625 ms)
+constexpr uint16_t BLE_ADV_ULP_MIN_INTERVAL_UNITS  = 320;     // 200 ms (320 * 0.625 ms) - fast iOS discovery during ULP sleep
+constexpr uint16_t BLE_ADV_ULP_MAX_INTERVAL_UNITS  = 480;     // 300 ms (480 * 0.625 ms)
 constexpr unsigned long FAST_ADV_BURST_WINDOW_MS = 300000UL;  // Full 5-minute pairing window
 constexpr uint32_t BLE_FLUSH_DELAY_MS = 30;
+
 
 constexpr uint32_t NOTIFY_ULP_INTERVAL_MS = 300000;
 constexpr uint32_t NOTIFY_LP_INTERVAL_MS = 3000;
@@ -145,20 +146,20 @@ constexpr const char *LIGHT_SLEEP_ENGINE_ACTIVE = "[POWER]: Explicit Timed Light
 }
 
 namespace BleConnParams {
-// Apple Accessory Design Guidelines Compliant Intervals (units of 1.25ms and 10ms)
-constexpr uint16_t BLE_CONN_MIN_INTERVAL_UNITS = 400;         // 500 ms (400 * 1.25 ms)
-constexpr uint16_t BLE_CONN_MAX_INTERVAL_UNITS = 800;         // 1000 ms (800 * 1.25 ms)
-constexpr uint16_t BLE_CONN_SLAVE_LATENCY = 4;                // Skip up to 4 intervals when idle
+// Apple Accessory Design Guidelines Compliant Idle Intervals (units of 1.25ms and 10ms)
+constexpr uint16_t BLE_CONN_MIN_INTERVAL_UNITS        = 120;  // 150 ms (120 * 1.25 ms)
+constexpr uint16_t BLE_CONN_MAX_INTERVAL_UNITS        = 240;  // 300 ms (240 * 1.25 ms)
+constexpr uint16_t BLE_CONN_SLAVE_LATENCY             = 1;    // Skip at most 1 interval (max 600ms latency)
 constexpr uint16_t BLE_CONN_SUPERVISION_TIMEOUT_UNITS = 600;  // 6000 ms (600 * 10 ms)
-                                                              // Active Breath Test Intervals (Zero-Lag UI State Delivery)
-constexpr uint16_t BLE_ACTIVE_MIN_INTERVAL_UNITS = 24;        // 30 ms (24 * 1.25 ms)
-constexpr uint16_t BLE_ACTIVE_MAX_INTERVAL_UNITS = 48;        // 60 ms (48 * 1.25 ms)
-constexpr uint16_t BLE_ACTIVE_SLAVE_LATENCY = 0;              // Every interval serviced immediately
-constexpr uint16_t BLE_ACTIVE_SUPERVISION_TIMEOUT = 400;      // 4000 ms (400 * 10 ms)
+// Active Breath Test Intervals (Zero-Lag UI State Delivery)
+constexpr uint16_t BLE_ACTIVE_MIN_INTERVAL_UNITS      = 24;   // 30 ms (24 * 1.25 ms)
+constexpr uint16_t BLE_ACTIVE_MAX_INTERVAL_UNITS      = 48;   // 60 ms (48 * 1.25 ms)
+constexpr uint16_t BLE_ACTIVE_SLAVE_LATENCY           = 0;    // Every interval serviced immediately
+constexpr uint16_t BLE_ACTIVE_SUPERVISION_TIMEOUT     = 400;  // 4000 ms (400 * 10 ms)
 }
 
 namespace MesoLogStrings {
-constexpr const char *LOG_BLE_CONN_UPDATE_REQ   = "[BLE CONNECT]: Central connected. Negotiated 500-1000ms low-power interval.";
+constexpr const char *LOG_BLE_CONN_UPDATE_REQ   = "[BLE CONNECT]: Central connected. Negotiated 150-300ms low-power interval.";
 constexpr const char *LOG_BLE_RESTORE_ULP       = "[BLE CONNECT]: Connection established. Maintained ULP mode.";
 constexpr const char *LOG_BLE_ADV_FAST_START    = "[BLE ADV]: Fast Advertising Started (5m window).";
 constexpr const char *LOG_BLE_ADV_ULP_START     = "[BLE ADV]: Transitioned to Low Power Advertising.";
@@ -599,7 +600,7 @@ void dispatchData(String payload) {
   Serial.println(payload);
   if (deviceConnected && pCharacteristic) {
     String formattedMsg = payload + "\n";
-    pCharacteristic->setValue((uint8_t *)formattedMsg.c_str(), formattedMsg.length());
+    pCharacteristic->setValue(reinterpret_cast<const uint8_t *>(formattedMsg.c_str()), formattedMsg.length());
     pCharacteristic->notify();
   } else if (payload.startsWith("{\"temp\":")) {
     saveOfflineData();
@@ -672,12 +673,6 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     if (bsec != nullptr && currentMode != MODE_BREATH_TEST) {
       resetToULP();
       logMessage(String(MesoLogStrings::LOG_BLE_RESTORE_ULP));
-
-      if (sensorData.currentGasRes > 0.0f || sensorData.currentTemp != 0.0f) {
-        float measuredVoltage = 0.0f;
-        sensorData.batteryPct = BatteryMonitor::readPercentageAndVoltage(measuredVoltage);
-        dispatchData(sensorData.toJsonString());
-      }
     }
   }
 
@@ -696,6 +691,16 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks {
       String rxValue = String((char *)val.data()).substring(0, val.length());
       snprintf(pendingCmdBuf, sizeof(pendingCmdBuf), "%s", rxValue.c_str());
       hasPendingCommand = true;
+    }
+  }
+
+  void onSubscribe(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo, uint16_t subValue) override {
+    if (subValue > 0 && currentMode != MODE_BREATH_TEST) {
+      if (sensorData.currentGasRes > 0.0f || sensorData.currentTemp != 0.0f) {
+        float measuredVoltage = 0.0f;
+        sensorData.batteryPct = BatteryMonitor::readPercentageAndVoltage(measuredVoltage);
+        dispatchData(sensorData.toJsonString());
+      }
     }
   }
 };
@@ -1011,7 +1016,7 @@ void loop() {
   const bool isBleHandshaking = deviceConnected && ((millis() - connectionEstablishedTimeMs) < MesoPowerConfig::BLE_HANDSHAKE_STABILIZATION_MS);
 
   const bool isInFastPairingWindow = (!deviceConnected) && ((millis() - lastAdvBurstStartMs) < FAST_ADV_BURST_WINDOW_MS);
-  if (!isBootGraceActive && !isUsbTethered && !isBleHandshaking && !isInFastPairingWindow &&
+  if (!isBootGraceActive && !isUsbTethered && !deviceConnected && !isInFastPairingWindow &&
     !pendingFastAdvRestart && currentMode == MODE_IDLE && !hasPendingCommand &&
     !pendingBreathCommand && !pendingDiagCommand && !pendingPowerDiagCommand) {
     esp_err_t timerErr = esp_sleep_enable_timer_wakeup(MesoPowerConfig::IDLE_LIGHT_SLEEP_DURATION_US);

@@ -182,6 +182,12 @@ extension BluetoothManager: CBCentralManagerDelegate {
                 self.pm10Value = BMConstants.emptyString
             }
         }
+        if peripheral.identifier == self.mesoNosePeripheral?.identifier {
+            DispatchQueue.main.async {
+                self.mesoNoseBattery = nil
+                self.isExternalPower = false
+            }                   
+        }
 
         connectedPeripherals.removeValue(forKey: peripheral.identifier)
         writeCharacteristics.removeValue(forKey: peripheral.identifier)
@@ -189,6 +195,8 @@ extension BluetoothManager: CBCentralManagerDelegate {
 
         DispatchQueue.main.async {
             if self.connectedPeripherals.isEmpty {
+                self.mesoNoseBattery = nil
+                self.isExternalPower = false
                 self.statusText = BMConstants.statusDisconnectedScanning
             } else {
                 self.statusText = BMConstants.statusConnectedActiveCount(

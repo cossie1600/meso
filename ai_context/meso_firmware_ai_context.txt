@@ -1,29 +1,50 @@
-# AI Context: Meso Nose Firmware Architectural Principles
+================================================================================
+MASTER PROJECT ARCHITECTURE & AI CONTEXT SPECIFICATION
+Project: Meso Nose & Votre Air Ecosystem
+Updated: November 2026
+================================================================================
 
-## Core Design Philosophy: Non-Destructive Scheduling & Zero Magic Numbers
+1. UNIVERSAL CODING RULES:
+   - Zero Emojis across all firmware, iOS code, logs, comments, and headers.
+   - Zero Magic Numbers & Strings: Centralize constants in typed structs/namespaces (UIConstants, BMConstants, MesoPowerConfig, MesoPowerLogs, BleConnParams, BatteryConfig, MesoLogStrings, DiagConstants, SensorFormatConstants).
+   - Strict Isolation & Minimal Scope Edits.
 
-This document defines the strict architectural constraints, state transition guards, and formatting standards for the Meso Nose ESP32 firmware (`BME688` + `BSEC 2.x` + `NimBLE`).
+2. TARGET HARDWARE & ARDUINO IDE BUILD CONFIGURATION:
+   - Microcontroller Target: ESP32-C6 (Board: "ESP32C6 Dev Module", USB CDC On Boot: "Enabled", Flash Size: "4MB (32Mb)", Partition Scheme: "Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)", Zigbee Mode: "Disabled").
+   - Sensor & Radio Stack: Bosch BME688 + BSEC 2.x + NimBLE 2.x (Verified 4/4 on Command 98 and 6/6 on Command 99).
 
----
+3. FIRMWARE SKETCH & DECISION MATRIX CONFIGURATION:
+   - Primary Firmware Sketch Name: meso_nose_pure_bsec_kinetics.ino.
+   - Dead-Code Hygiene: Unused selectivity blob (bsec_config_iaq, bsec_iaq.h, bsec_selectivity.h), unused flag dryAirActive, duplicate MILLISECONDS_TO_SECONDS_CONVERSION, and uncalled legacy helpers (captureBreathSensingWindow, softResetBme688Sensor, resetToDefaultMode, readLowLevelScanFrame) are removed.
+   - Shared Enum Definitions (sensor_data.h): OperationMode (: uint8_t -> MODE_IDLE, MODE_BREATH_TEST, MODE_DIAGNOSTIC) and BsecProfile (: uint8_t -> PROFILE_OFF, PROFILE_ULP_300S, PROFILE_LP_3S) are defined once in sensor_data.h to enforce C++ ODR parity across .ino and diagnostics.cpp.
+   - Explicit Forward Declarations & Arduino Core 3.x Types: Declare prototypes explicitly (setBleConnectionSpeed, startBleAdvertisingWithInterval) and type all decimal-precision constants as constexpr unsigned int (TELEMETRY_FLOAT_PRECISION = 1U, DURATION_FLOAT_PRECISION = 2U, VOLTAGE_FLOAT_PRECISION = 3U, STANDARD_FLOAT_PRECISION = 1U, HIGH_FLOAT_PRECISION = 2U) to match WString.h's String(float, unsigned int) without overload ambiguity.
+   - Clock & Boot Sequence Order (Verified ESP32-C6 Boot Rule): setup() initializes BatteryMonitor::init() first, checks isUsbConnected = BatteryMonitor::isCharging(), and ONLY delays USB_ENUM_TIMEOUT_MS (2500UL) when isUsbConnected is true so macOS USB CDC re-enumeration completes after upload/reset before printing boot logs (while untethered battery boots skip the delay). When !isUsbConnected, setCpuFrequencyMhz(MesoPowerConfig::CPU_LOW_POWER_FREQ_MHZ) (80 MHz) executes BEFORE NimBLEDevice::init() and Wire.begin() so the BLE RF PLL and APB bus dividers calibrate cleanly at 80 MHz.
+   - Unified NimBLE 2.x Advertising & Loop-Scheduled Disconnect Recovery: startBleAdvertisingWithInterval(minUnits, maxUnits) configures setName(), addServiceUUID(), enableScanResponse(true), refreshAdvertisingData(), and NimBLEDevice::startAdvertising() in one helper. ServerCallbacks::onDisconnect() sets volatile bool pendingFastAdvRestart = true so loop()'s adjustAdvertisingPower() restarts fast advertising safely on the main task and gates off Light Sleep until active.
+   - BSEC 2.x Non-Destructive Idempotency, Warning Tolerance & Rate Transition Reset: In BSEC 2.x, positive status codes (> BSEC_OK, such as +14 BSEC_W_SU_SAMPLERATEMISMATCH when subscribing LP 3s on default config) are non-fatal warnings while negative codes (< BSEC_OK) are errors. updateBsecSubscription() and diagnostics.cpp validate active subscriptions via bsec->status >= BSEC_OK, skip redundant resets when isAlreadyTargetProfile && (bsec->status >= BSEC_OK), and reconstruct Bsec2 (delete bsec; bsec = new Bsec2(); bsec->begin(); bsec->attachCallback()) when switching rates (ULP <-> LP) or recovering from a fault (< BSEC_OK).
+   - Transient Heater Spike Guard & Formatting Constants: waitForBreathExhalation() discards frames where currentGasRes <= HW_MIN_SENSOR_GAS_RES (5000.0f) before updating outMinRes, dispatching dH/gDrop telemetry, or evaluating trigger gates, using MS_PER_SECOND = 1000UL, PERCENTAGE_SCALE_FACTOR = 100.0f, TELEMETRY_FLOAT_PRECISION = 1U, and MesoLogStrings::LOG_HEATER_TRANSIENT_SKIP.
+   - Serial Input Sanitization, Hot-Plug Detection & Loop-Scheduled Diagnostics: processSerialInput() filters input with isPrintable() to strip stray USB-CDC control/null bytes, echoes printSystemStatus() when pressing Enter on an empty line or sending status/help/?, and schedules Command 98 (pendingPowerDiagCommand) and Command 99 (pendingDiagCommand) from loop() while gating off Light Sleep. In loop(), static bool wasUsbTethered = true tracks rising-edge USB attachment (isUsbTethered && !wasUsbTethered) to log MesoLogStrings::LOG_USB_CONSOLE_ATTACHED once.
+   - Configured Gas Drop & Moisture Thresholds (breath_kinetics_engine.h): DRY_MOUTH_MAX_DELTA_RH_PCT = 8.0f, BREATH_MIN_SIGNIFICANT_DROP_PCT = 6.0f, BREATH_FRESH_MAX_DROP_PCT = 17.0f, BREATH_SIGNIFICANT_MAX_DROP_PCT = 45.0f.
+   - Configured T50 Recovery Lag Threshold: RECOVERY_LAG_MALODOR_THRESHOLD = 4.2f (4.2s T50 desorption threshold; align 50DesorptionRecoveryLag.md examples from 3.5s to 4.2s).
 
-### 1. Zero Magic Numbers Policy
-* **Rule**: Every duration (`_MS`), voltage (`_VOLTS`), threshold (`_PCT`, `_PPM`), buffer size, or hardware parameter MUST be declared as a strongly typed `constexpr` constant.
-* **Naming Standards**:
-  * Timing: `_MS`, `_US`, `_HZ`
-  * Voltage/ADC: `_VOLTS`, `_MV`, `_SAMPLES`, `_BITS`
-  * Boundaries/Thresholds: `_PCT`, `_PPM`, `_OAM`, `_THRESHOLD`, `_MIN`, `_MAX`
-* **Exemptions**: Idiomatic loop counters starting at `0`, standard string/char formatting buffers, bitwise mask shifts, or FreeRTOS task tick conversions (`pdMS_TO_TICKS`).
+4. BLE CONNECTION, POWER MANAGEMENT & WATCHDOG PARITY:
+   - Responsive BLE Advertising Intervals (Zero-Reset Discovery): Fast pairing burst (FAST_ADV_BURST_WINDOW_MS = 300000UL) uses BLE_ADV_FAST_MIN/MAX_INTERVAL_UNITS = 96..160 (60-100 ms); ULP sleep advertising uses BLE_ADV_ULP_MIN/MAX_INTERVAL_UNITS = 320..480 (200-300 ms) so iOS CoreBluetooth discovers and connects within ~1-2s even after the 5-minute window expires without pressing RST.
+   - Active-Link Stability & Timed Light Sleep: IDLE_LIGHT_SLEEP_DURATION_US = 100000ULL (100ms ticks) runs when disconnected (!deviceConnected), gated off during boot grace (5s), USB tethering, active BLE connections (deviceConnected), 5-minute fast pairing window (isInFastPairingWindow), pendingFastAdvRestart, and active tests (currentMode != MODE_IDLE). Idle BLE connections negotiate 150-300ms (120-240 units, slave_latency = 1, timeout = 6000ms) after the 5s GATT handshake to prevent 5-second ESP32-C6 XTAL/link-layer drops, switching to 30-60ms (24-48 units, slave_latency = 0) during active breath tests.
+   - eFuse-Calibrated Battery ADC & Hardware USB SOF Detection (battery_monitor.h / .cpp): readPercentageAndVoltage() averages ADC_OVERSAMPLE_COUNT = 4 samples of analogReadMilliVolts(BATTERY_ADC_PIN) (ADC_RESOLUTION_BITS = 12, MILLIVOLTS_PER_VOLT = 1000.0f, VOLTAGE_DIVIDER_RATIO = 2.0f) and maps readings < MIN_PHYSICAL_CELL_DETECT_VOLTS (1.50f) to USB_POWERED_FALLBACK_PERCENT (100%). BatteryMonitor::isCharging() checks static_cast<bool>(Serial) OR live 1 ms hardware SOF increments on USB_SERIAL_JTAG.fram_num.val (USB_SOF_PROBE_DELAY_MS = 3UL, USB_SOF_HOLD_MS = 100UL). CRITICAL_LOW_BATTERY_SHUTDOWN_VOLTS = 3.10f with 3 consecutive checks (30s debounce), 1100ms BLE drain delay, and 60s timer wakeup (esp_sleep_enable_timer_wakeup(MesoPowerConfig::EMERGENCY_SLEEP_WAKEUP_US)).
+   - iOS Connection Watchdog & Auto-Pair (BluetoothManager+CentralManager.swift): BMConstants.connectionTimeoutSeconds = 7.0s cancels stalled .connecting states and restarts scan; savedMesoNoseUUID == nil enables automatic first-time proximity pairing (BMConstants.proximityRSSIThreshold = -80 dBm).
+   - iOS Peripheral Lookup & External Power Handling (BluetoothManager+MesoNose.swift): mesoNosePeripheral matches name prefix or savedMesoNoseUUID; BMConstants.zeroBatteryThreshold maps tethered 0% readings to tetheredFallbackBatteryPercent (100%) with isExternalPower = true.
 
----
+5. iOS TAB NAVIGATION, WATCHDOG ALIGNMENT & METHOD SIGNATURES (`MesoSensorDashboard`):
+   - Teardown Signature Parity: handleBreathTestCompletion(didSucceed: Bool, failureReason: String? = nil) supports optional failure strings for TIMEOUT / EXHALATION_TOO_WEAK logs.
+   - BreathTestState Alignment: Checks .warmingUp (matching BluetoothManager+Types.swift enum) and evaluates bleManager.isConnected directly.
+   - Blow Window Timeout Alignment: BMConstants.blowWindowTimeoutSeconds = 32.0s (30s firmware timeout + 2s BLE buffer).
+   - Sequence Guarding: processFirmwareStateTransition() rejects late state transition packets (.TESTING_SENSING_BREATH / .RECOVERING_CALCULATING_T50) if breathTestState is no longer active.
+   - 3-Second Result Card Highlight Animation: Upon test completion (.completed), VotreAirDashboardView scales top card (+3%) with a green glow overlay for 3 seconds before smoothly fading out.
 
-### 2. BSEC 2.x Non-Destructive Scheduler Management
+6. SENSOR STABILIZING & TELEMETRY INGESTION:
+   - BME688 Resistance Threshold: HW_MIN_SENSOR_GAS_RES = 5000.0f (firmware) and transientWarmupVocFloor = 1000 Ohms (iOS). Valid ambient readings auto-transition breathTestState to .idle.
+   - Ambient Freshness Window: maxAmbientSampleAgeSeconds = 300.0s (5 minutes).
 
-To avoid BSEC library deadlocks, silent callback drops, or timing desynchronization between ESP32 software uptime (`millis()`) and physical sensor hardware states:
-
-#### Principle A: No Forcing or Interruption
-* `setBsecProfile()` **MUST** respect active profile state checks:
-  ```cpp
-  if (currentProfile == profile) {
-      logMessage("[SET_PROFILE SKIPPED]: Target profile matches current profile.");
-      return;
-  }
+7. DESORPTION RECOVERY KINETICS (T50):
+   - Formula: R_target50 = R_min + 0.5 * (R_base - R_min).
+   - Classification: Fast Recovery (T50 < 4.2s) vs. Slow Recovery (T50 >= 4.2s) for Volatile Sulfur Compounds.
+================================================================================

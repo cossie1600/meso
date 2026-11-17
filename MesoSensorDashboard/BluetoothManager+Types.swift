@@ -58,6 +58,8 @@ struct BMConstants {
     static let defaultUnknownDevice = "Unknown Device"
     static let defaultUnnamedLocalDevice = "Unnamed Local Device"
     static let debugEmergencyActive = "DEBUG: Forced Emergency Active"
+    
+    static let firmwareLogPrefix = "[LOG]:"
 
     static func statusConnectingTo(_ deviceName: String) -> String {
         "Connecting to \(deviceName)..."
