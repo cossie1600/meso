@@ -65,7 +65,7 @@ constexpr uint32_t BASELINE_CAPTURE_TIMEOUT_MS = 15000UL;
 constexpr float HW_MIN_SENSOR_GAS_RES = 5000.0f;
 
 constexpr float PARTIAL_EXHALATION_MIN_DELTA_RH_PCT = 0.8f;
-constexpr float EXHALATION_MIN_MOISTURE_DELTA_RH_PCT = 6.0f;
+constexpr float EXHALATION_MIN_MOISTURE_DELTA_RH_PCT = SensorConstants::DRY_MOUTH_MAX_DELTA_RH_PCT;
 constexpr float EXHALATION_MIN_GAS_DROP_PCT = 5.0f;
 constexpr float EXHALATION_FORCE_TRIGGER_GAS_DROP_PCT = 15.0f;
 constexpr uint32_t THERMAL_TRANSIENT_SUPPRESSION_MS = 4000;
@@ -488,13 +488,10 @@ void resetTestEvaluationData() {
 }
 
 void processBreathTestResults(float baseRes, float minRes, float maxDeltaHumidity, float recoveryLag) {
-  float deltaDrop = (baseRes > 0.0f) ? (((baseRes - minRes) / baseRes) * 100.0f) : 0.0f;
+  float deltaDrop = (baseRes > 0.0f) ? (((baseRes - minRes) / baseRes) * PERCENTAGE_SCALE_FACTOR) : 0.0f;
   if (deltaDrop < 0.0f) deltaDrop = 0.0f;
 
-  // Capture latest battery state immediately prior to serialization
-  float currentCellVoltage = 0.0f;
-  sensorData.batteryPct = BatteryMonitor::readPercentageAndVoltage(currentCellVoltage);
-
+  // Reuse resting idle batteryPct (avoids ~30 mA heater + BLE voltage sag dip)
   sensorData.currentGasRes = minRes;
   sensorData.deltaDrop = deltaDrop;
   sensorData.rBreathMin = static_cast<long>(minRes);

@@ -1,6 +1,25 @@
 #include "battery_monitor.h"
 #include "soc/usb_serial_jtag_struct.h"
 
+namespace {
+  uint8_t mapVoltageToPercentage(float cellVolts) {
+    if (cellVolts >= BatteryConfig::LIPO_MAX_OPERATIONAL_VOLTS) {
+      return BatteryConfig::USB_POWERED_FALLBACK_PERCENT;
+    }
+    if (cellVolts <= BatteryConfig::LIPO_MIN_OPERATIONAL_VOLTS) {
+      return BatteryConfig::EMPTY_CELL_PERCENT;
+    }
+
+    constexpr float voltageRangeVolts =
+      BatteryConfig::LIPO_MAX_OPERATIONAL_VOLTS - BatteryConfig::LIPO_MIN_OPERATIONAL_VOLTS;
+
+    const float percentage = ((cellVolts - BatteryConfig::LIPO_MIN_OPERATIONAL_VOLTS) / voltageRangeVolts) *
+                             BatteryConfig::PERCENTAGE_FULL_SCALE;
+
+    return static_cast<uint8_t>(percentage);
+  }
+}
+
 namespace BatteryMonitor {
 
   void init() {
@@ -35,6 +54,9 @@ namespace BatteryMonitor {
   }
 
   uint8_t readPercentageAndVoltage(float &outVoltage) {
+    static float s_filteredVoltage = BatteryConfig::UNINITIALIZED_VOLTAGE_SENTINEL;
+    static uint8_t s_lastUntetheredPct = BatteryConfig::UNINITIALIZED_PERCENT_SENTINEL;
+
     uint32_t accumulatedMv = 0;
     for (uint8_t i = 0; i < BatteryConfig::ADC_OVERSAMPLE_COUNT; i++) {
       accumulatedMv += analogReadMilliVolts(BatteryConfig::BATTERY_ADC_PIN);
@@ -43,31 +65,39 @@ namespace BatteryMonitor {
     const float averagePinMv = static_cast<float>(accumulatedMv) /
                                static_cast<float>(BatteryConfig::ADC_OVERSAMPLE_COUNT);
 
-    outVoltage = (averagePinMv / BatteryConfig::MILLIVOLTS_PER_VOLT) *
-                 BatteryConfig::VOLTAGE_DIVIDER_RATIO;
+    const float rawVoltage = (averagePinMv / BatteryConfig::MILLIVOLTS_PER_VOLT) *
+                             BatteryConfig::VOLTAGE_DIVIDER_RATIO;
 
-    // If the MCU is running while cell voltage reads below 1.50V, it is powered
-    // via USB VBUS with no physical LiPo attached (including dumb USB wall chargers)
-    if (outVoltage < BatteryConfig::MIN_PHYSICAL_CELL_DETECT_VOLTS) {
+    // Below 1.50V implies batteryless USB VBUS operation
+    if (rawVoltage < BatteryConfig::MIN_PHYSICAL_CELL_DETECT_VOLTS) {
+      s_filteredVoltage = BatteryConfig::UNINITIALIZED_VOLTAGE_SENTINEL;
+      s_lastUntetheredPct = BatteryConfig::UNINITIALIZED_PERCENT_SENTINEL;
+      outVoltage = rawVoltage;
       return BatteryConfig::USB_POWERED_FALLBACK_PERCENT;
     }
 
-    // Upper and lower operational clamping
-    if (outVoltage >= BatteryConfig::LIPO_MAX_OPERATIONAL_VOLTS) {
-      return BatteryConfig::USB_POWERED_FALLBACK_PERCENT;
+    if (s_filteredVoltage < 0.0f) {
+      s_filteredVoltage = rawVoltage;
+    } else {
+      s_filteredVoltage = (BatteryConfig::SOC_EMA_ALPHA * rawVoltage) +
+                          ((1.0f - BatteryConfig::SOC_EMA_ALPHA) * s_filteredVoltage);
     }
-    if (outVoltage <= BatteryConfig::LIPO_MIN_OPERATIONAL_VOLTS) {
-      return BatteryConfig::EMPTY_CELL_PERCENT;
+
+    outVoltage = s_filteredVoltage;
+    uint8_t computedPct = mapVoltageToPercentage(s_filteredVoltage);
+
+    // Prevent upward SoC bounce when discharging on battery; allow rising SoC while charging
+    if (!isCharging()) {
+      if (s_lastUntetheredPct <= BatteryConfig::USB_POWERED_FALLBACK_PERCENT &&
+          computedPct > s_lastUntetheredPct) {
+        computedPct = s_lastUntetheredPct;
+      }
+      s_lastUntetheredPct = computedPct;
+    } else {
+      s_lastUntetheredPct = BatteryConfig::UNINITIALIZED_PERCENT_SENTINEL;
     }
 
-    // Linear interpolation across operational voltage span
-    constexpr float voltageRangeVolts =
-      BatteryConfig::LIPO_MAX_OPERATIONAL_VOLTS - BatteryConfig::LIPO_MIN_OPERATIONAL_VOLTS;
-
-    const float percentage = ((outVoltage - BatteryConfig::LIPO_MIN_OPERATIONAL_VOLTS) / voltageRangeVolts) *
-                             BatteryConfig::PERCENTAGE_FULL_SCALE;
-
-    return static_cast<uint8_t>(percentage);
+    return computedPct;
   }
 
 } // namespace BatteryMonitor

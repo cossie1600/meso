@@ -19,9 +19,12 @@ namespace BatteryConfig {
   constexpr float   LIPO_MIN_OPERATIONAL_VOLTS       = 3.20f;   // Empty cutoff floor
   constexpr float   LIPO_MAX_OPERATIONAL_VOLTS       = 4.20f;   // Full charge ceiling
 
-  // State-of-Charge Percentages (Zero Magic Numbers)
+  // State-of-Charge Smoothing & Sentinel Constants (Zero Magic Numbers)
   constexpr uint8_t USB_POWERED_FALLBACK_PERCENT     = 100;
   constexpr uint8_t EMPTY_CELL_PERCENT               = 0;
+  constexpr uint8_t UNINITIALIZED_PERCENT_SENTINEL   = 255;
+  constexpr float   UNINITIALIZED_VOLTAGE_SENTINEL   = -1.0f;
+  constexpr float   SOC_EMA_ALPHA                    = 0.25f;   // Smooths ADC ripple without lag
 
   // USB Hardware Start-of-Frame (SOF) Host Detection Constants (1 ms USB SOF cadence)
   constexpr uint32_t USB_SOF_PROBE_DELAY_MS          = 3UL;     // Captures >= 2 hardware SOF ticks

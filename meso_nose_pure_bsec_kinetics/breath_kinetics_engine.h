@@ -4,7 +4,7 @@
 
 namespace SensorConstants {
     // Moisture & Dry Mouth Boundaries (%)
-    constexpr float DRY_MOUTH_MAX_DELTA_RH_PCT      = 8.0f;
+    constexpr float DRY_MOUTH_MAX_DELTA_RH_PCT      = 3.5f;
 
     // VOC Drop Delta Boundaries (%)
     constexpr float BREATH_MIN_SIGNIFICANT_DROP_PCT = 6.0f;
